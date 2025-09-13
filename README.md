@@ -16,7 +16,7 @@ The server will automatically fill any missing API keys for each user entry. Thi
 
 ```
 git clone https://github.com/prolix-oc/BananaBread
-cd BananaBread-Emb
+cd BananaBread
 uv run bananabread-emb
 ```
 

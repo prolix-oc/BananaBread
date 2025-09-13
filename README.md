@@ -20,7 +20,7 @@ cd BananaBread-Emb
 uv run bananabread-emb
 ```
 
-This will begin a download of all the prerequesite models from HuggingFace. This will download `mxbai-embed-large-v1`, `mxbai-rerank-base-v2`, and `SamLowe/roberta-base-go_emotions`, then start the endpoint on port 8008.
+This will begin a download of all the prerequesite packages, run the server, and download the models from HuggingFace. This will download `mxbai-embed-large-v1`, `mxbai-rerank-base-v2`, and `SamLowe/roberta-base-go_emotions`, then start the FastAPI server on port 8008.
 
 ## Advanced Usage
 To see all advanced flags:

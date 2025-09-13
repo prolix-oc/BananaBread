@@ -15,7 +15,7 @@ The server will automatically fill any missing API keys for each user entry. Thi
 **Recommended virtual environment manager: UV**
 
 ```
-git clone https://github.com/prolix-oc/BananaBread-Emb
+git clone https://github.com/prolix-oc/BananaBread
 cd BananaBread-Emb
 uv run bananabread-emb
 ```

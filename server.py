@@ -310,6 +310,12 @@ Examples:
   
   # Use Apple Silicon GPU (MPS)
   python server.py --embedding-device mps --rerank-device mps
+  
+  # Use ubinary quantization for embeddings
+  python server.py --quant ubinary
+  
+  # Use int8 quantization for embeddings
+  python server.py --quant int8
     """
 )
 
@@ -339,6 +345,10 @@ parser.add_argument("--rerank-device", type=str, default="cpu",
 # Logging arguments
 parser.add_argument("--log-level", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default='INFO',
                    help="Set logging level (default: INFO)")
+
+# Quantization arguments
+parser.add_argument("--quant", type=str, choices=['standard', 'ubinary', 'int8'], default='standard',
+                   help="Quantization precision for embeddings (default: standard)")
 
 args, remaining_args = parser.parse_known_args()
 
@@ -509,6 +519,7 @@ classifier = pipeline(
 cache_limit_bytes = args.cache_limit * 1024 * 1024
 
 logger.info(f"💾 Using cache limit: {args.cache_limit} MB ({cache_limit_bytes} bytes)")
+logger.info(f"🔢 Embedding quantization: {args.quant}")
 
 # Update thread counts based on command line arguments if provided
 if args.embedding_threads and args.embedding_threads != EMBEDDING_THREADS:
@@ -703,19 +714,22 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
             inputs
         )
     
-    # Create wrapper function for quantize_embeddings to handle keyword arguments
-    def quantize_embeddings_wrapper(embeddings):
-        return quantize_embeddings(embeddings, precision="ubinary")
-    
-    binary_docs_embeddings = await run_in_threadpool_with_executor(
-        embedding_executor,
-        quantize_embeddings_wrapper,
-        docs_embeddings
-    )
+    # Apply quantization based on CLI argument
+    if args.quant != 'standard':
+        # Create wrapper function for quantize_embeddings to handle keyword arguments
+        def quantize_embeddings_wrapper(embeddings):
+            return quantize_embeddings(embeddings, precision=args.quant)
+        
+        docs_embeddings = await run_in_threadpool_with_executor(
+            embedding_executor,
+            quantize_embeddings_wrapper,
+            docs_embeddings
+        )
+        logger.debug(f"Applied {args.quant} quantization to embeddings")
     
     # Format response to mimic OpenAI's embeddings API.
     data = []
-    for idx, emb in enumerate(binary_docs_embeddings.tolist()):
+    for idx, emb in enumerate(docs_embeddings.tolist()):
         data.append({
             "object": "embedding",
             "embedding": emb,
@@ -977,6 +991,7 @@ async def read_root():
         "total_physical_cores": TOTAL_PHYSICAL_CORES,
         "optimized_threadpools": True,
         "cpu_socket": args.cpu_socket,
+        "embedding_quantization": args.quant,
         "endpoints": {
             "embeddings": "/v1/embeddings",
             "rerank": "/v1/rerank", 

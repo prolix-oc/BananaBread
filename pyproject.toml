@@ -7,7 +7,7 @@ name = "bananabread-emb"
 version = "0.5.2"
 description = "A way to slip MixedBread's reranker and embedder into a lot of places it doesn't belong."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
     {name = "Prolix Creates", email = "info@prolix.dev"},
@@ -79,7 +79,7 @@ profile = "black"
 line_length = 100
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

@@ -689,6 +689,8 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
     if not inputs:
         raise HTTPException(status_code=400, detail="Input must be provided")
     
+    logger.info(f"📄 Processing {len(inputs)} documents for embeddings")
+    
     key = get_embedding_cache_key(inputs) if inputs else ""
     if key in embedding_cache:
         return embedding_cache[key]
@@ -828,6 +830,8 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest):
     if not inputs:
         raise HTTPException(status_code=400, detail="Input must be provided")
     
+    logger.info(f"📄 Processing {len(inputs)} documents for Ollama embeddings")
+    
     # Generate embeddings using the existing embedding model
     # Use dedicated embedding threadpool for optimal performance
     docs_embeddings = await run_in_threadpool_with_executor(
@@ -879,6 +883,8 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
     """
     if not request.content:
         raise HTTPException(status_code=400, detail="Content must be provided")
+    
+    logger.info(f"📄 Processing 1 document for Llama.cpp embeddings")
     
     # Generate embedding using the existing embedding model
     # Use dedicated embedding threadpool for optimal performance

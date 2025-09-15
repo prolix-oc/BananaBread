@@ -316,6 +316,12 @@ Examples:
   
   # Use int8 quantization for embeddings
   python server.py --quant int8
+  
+  # Use custom embedding dimensions (512 instead of default 1024)
+  python server.py --embedding-dim 512
+  
+  # Use maximum embedding dimensions (no truncation)
+  python server.py --embedding-dim 2048
     """
 )
 
@@ -349,6 +355,10 @@ parser.add_argument("--log-level", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR']
 # Quantization arguments
 parser.add_argument("--quant", type=str, choices=['standard', 'ubinary', 'int8'], default='standard',
                    help="Quantization precision for embeddings (default: standard)")
+
+# Embedding dimensions argument
+parser.add_argument("--embedding-dim", type=int, default=1024,
+                   help="Embedding dimensions to truncate to (default: 1024)")
 
 args, remaining_args = parser.parse_known_args()
 
@@ -458,15 +468,16 @@ logger.info("Initializing models...")
 logger.info(f"Loading rerank model on device: {args.rerank_device}")
 rerank_model = MxbaiRerankV2("mixedbread-ai/mxbai-rerank-base-v2", device=args.rerank_device)
 
-# Embedding model initialization with truncation to 1024 dimensions and device specification
+# Embedding model initialization with truncation to specified dimensions and device specification
 logger.info(f"Loading embedding model on device: {args.embedding_device}")
-embedding_model = SentenceTransformer("mixedbread-ai/mxbai-embed-large-v1", truncate_dim=1024, device=args.embedding_device)
+logger.info(f"Using embedding dimensions: {args.embedding_dim}")
+embedding_model = SentenceTransformer("mixedbread-ai/mxbai-embed-large-v1", truncate_dim=args.embedding_dim, device=args.embedding_device)
 logger.info("Models initialized successfully")
 
 def get_cache_size(obj):
     """
     Recursively estimate the size in bytes of a Python object.
-    This is a rough approximation.
+    This is a rough approximation.z
     """
     seen_ids = set()
     def inner(obj):
@@ -992,6 +1003,7 @@ async def read_root():
         "optimized_threadpools": True,
         "cpu_socket": args.cpu_socket,
         "embedding_quantization": args.quant,
+        "embedding_dimensions": args.embedding_dim,
         "endpoints": {
             "embeddings": "/v1/embeddings",
             "rerank": "/v1/rerank", 

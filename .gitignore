@@ -2,3 +2,6 @@ venv/
 .venv/
 __pycache__/
 api_keys.json
+bananabread_emb.egg-info/
+uv.lock
+

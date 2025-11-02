@@ -360,6 +360,14 @@ parser.add_argument("--quant", type=str, choices=['standard', 'ubinary', 'int8']
 parser.add_argument("--embedding-dim", type=int, default=1024,
                    help="Embedding dimensions to truncate to (default: 1024)")
 
+# Embedding model selection arguments
+parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen'], default='mixedbread',
+                   help="Embedding model to use (default: mixedbread)")
+parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default='0.6B',
+                   help="Qwen model size to use when --embedding-model=qwen (default: 0.6B)")
+parser.add_argument("--qwen-flash-attention", action='store_true',
+                   help="Enable flash_attention_2 for Qwen models (requires compatible GPU)")
+
 args, remaining_args = parser.parse_known_args()
 
 # Setup logging level
@@ -470,8 +478,34 @@ rerank_model = MxbaiRerankV2("mixedbread-ai/mxbai-rerank-base-v2", device=args.r
 
 # Embedding model initialization with truncation to specified dimensions and device specification
 logger.info(f"Loading embedding model on device: {args.embedding_device}")
-logger.info(f"Using embedding dimensions: {args.embedding_dim}")
-embedding_model = SentenceTransformer("mixedbread-ai/mxbai-embed-large-v1", truncate_dim=args.embedding_dim, device=args.embedding_device)
+logger.info(f"Using embedding model: {args.embedding_model}")
+
+if args.embedding_model == 'qwen':
+    # Initialize Qwen embedding model
+    qwen_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
+    logger.info(f"Loading Qwen model: {qwen_model_name}")
+    
+    if args.qwen_flash_attention:
+        logger.info("Enabling flash_attention_2 for Qwen model")
+        embedding_model = SentenceTransformer(
+            qwen_model_name,
+            model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto"},
+            tokenizer_kwargs={"padding_side": "left"},
+            device=args.embedding_device
+        )
+    else:
+        embedding_model = SentenceTransformer(qwen_model_name, device=args.embedding_device)
+    
+    # Store model name for later use
+    embedding_model_name = qwen_model_name
+    # Qwen models don't support truncate_dim in constructor, dimensions are fixed per model
+    logger.info(f"Qwen model loaded (native dimensions)")
+else:
+    # Initialize MixedBread embedding model (default)
+    embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
+    logger.info(f"Using embedding dimensions: {args.embedding_dim}")
+    embedding_model = SentenceTransformer(embedding_model_name, truncate_dim=args.embedding_dim, device=args.embedding_device)
+
 logger.info("Models initialized successfully")
 
 def get_cache_size(obj):
@@ -707,11 +741,19 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         
         for i in range(0, len(inputs), chunk_size):
             chunk = inputs[i:i + chunk_size]
-            chunk_embeddings = await run_in_threadpool_with_executor(
-                embedding_executor,
-                embedding_model.encode,
-                chunk
-            )
+            # For Qwen models, use prompt_name="query" for better retrieval performance
+            if args.embedding_model == 'qwen':
+                chunk_embeddings = await run_in_threadpool_with_executor(
+                    embedding_executor,
+                    lambda c: embedding_model.encode(c, prompt_name="query"),
+                    chunk
+                )
+            else:
+                chunk_embeddings = await run_in_threadpool_with_executor(
+                    embedding_executor,
+                    embedding_model.encode,
+                    chunk
+                )
             all_embeddings.append(chunk_embeddings)
             progress_tracker.update(min(i + chunk_size, len(inputs)))
         
@@ -721,11 +763,19 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         progress_tracker.finish()
     else:
         # For small batches, process normally
-        docs_embeddings = await run_in_threadpool_with_executor(
-            embedding_executor,
-            embedding_model.encode,
-            inputs
-        )
+        # For Qwen models, use prompt_name="query" for better retrieval performance
+        if args.embedding_model == 'qwen':
+            docs_embeddings = await run_in_threadpool_with_executor(
+                embedding_executor,
+                lambda inp: embedding_model.encode(inp, prompt_name="query"),
+                inputs
+            )
+        else:
+            docs_embeddings = await run_in_threadpool_with_executor(
+                embedding_executor,
+                embedding_model.encode,
+                inputs
+            )
     
     # Apply quantization based on CLI argument
     if args.quant != 'standard':
@@ -755,7 +805,7 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
     result = {
         "object": "list",
         "data": data,
-        "model": request.model,
+        "model": embedding_model_name,
         "usage": usage
     }
     embedding_cache[key] = result
@@ -859,7 +909,7 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest):
     # Format response according to Ollama API specification
     response = OllamaEmbeddingResponse(
         embedding=embedding,
-        model=request.model
+        model=embedding_model_name
     )
     
     return response
@@ -935,7 +985,7 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
     # Format response according to llama.cpp API specification
     response = LlamaCppEmbeddingResponse(
         embedding=embedding,
-        model=request.model
+        model=embedding_model_name
     )
     
     return response
@@ -1008,8 +1058,10 @@ async def read_root():
         "total_physical_cores": TOTAL_PHYSICAL_CORES,
         "optimized_threadpools": True,
         "cpu_socket": args.cpu_socket,
+        "embedding_model": args.embedding_model,
+        "embedding_model_name": embedding_model_name,
         "embedding_quantization": args.quant,
-        "embedding_dimensions": args.embedding_dim,
+        "embedding_dimensions": args.embedding_dim if args.embedding_model == 'mixedbread' else "native",
         "endpoints": {
             "embeddings": "/v1/embeddings",
             "rerank": "/v1/rerank", 

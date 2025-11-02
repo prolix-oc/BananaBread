@@ -285,8 +285,8 @@ class QwenReranker:
         # Combine query and documents for batch processing
         input_texts = [formatted_query] + documents
         
-        # Tokenize
-        with torch.no_grad():
+        # Tokenize - using inference_mode() for better memory efficiency
+        with torch.inference_mode():
             batch_dict = self.tokenizer(
                 input_texts,
                 padding=True,
@@ -310,6 +310,10 @@ class QwenReranker:
             
             # Convert to list and create results
             scores_list = scores.cpu().tolist()
+        
+        # Clear CUDA cache to reduce fragmentation if using GPU
+        if self.device != "cpu" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         # Create results list with scores and indices
         results = []

@@ -14,13 +14,14 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List
 
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer, AutoModel
 from collections import OrderedDict
 from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel
 from mxbai_rerank import MxbaiRerankV2
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.quantization import quantize_embeddings
+import torch.nn.functional as F
 
 
 # ----- Enhanced Logging Configuration -----show_progress_bar=False
@@ -210,6 +211,126 @@ def setup_pretty_logging(level=logging.INFO):
 setup_pretty_logging()
 logger = logging.getLogger("BananaBread-Emb")
 
+# ----- Qwen Reranking Helper Functions -----
+
+def last_token_pool(last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    """Pool the last token from hidden states based on attention mask"""
+    left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+    if left_padding:
+        return last_hidden_states[:, -1]
+    else:
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_size = last_hidden_states.shape[0]
+        return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
+
+def get_detailed_instruct(task_description: str, query: str) -> str:
+    """Format query with instruction for Qwen reranking"""
+    return f'Instruct: {task_description}\nQuery: {query}'
+
+# ----- Qwen Reranker Class -----
+
+class QwenReranker:
+    """Qwen-based reranking using embedding similarity"""
+    
+    def __init__(self, model_name: str, device: str = "cpu", use_flash_attention: bool = False, 
+                 rerank_instruction: str = "Given the following storytelling documents, which of these best add to the user's message?"):
+        """
+        Initialize Qwen reranker
+        
+        Args:
+            model_name: Name of the Qwen model to use
+            device: Device to load model on (cpu, cuda, etc.)
+            use_flash_attention: Whether to use flash_attention_2
+            rerank_instruction: Instruction template for reranking tasks
+        """
+        self.device = device
+        self.rerank_instruction = rerank_instruction
+        self.max_length = 8192
+        
+        logger.info(f"Loading Qwen reranker model: {model_name}")
+        
+        # Initialize tokenizer with left padding
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
+        
+        # Initialize model
+        if use_flash_attention:
+            logger.info("Enabling flash_attention_2 for Qwen reranker")
+            self.model = AutoModel.from_pretrained(
+                model_name,
+                attn_implementation="flash_attention_2",
+                torch_dtype=torch.float16
+            ).to(device)
+        else:
+            self.model = AutoModel.from_pretrained(model_name).to(device)
+        
+        self.model.eval()
+        logger.info(f"Qwen reranker initialized on {device}")
+    
+    def rank(self, query: str, documents: list[str], return_documents: bool = False, top_k: int = None) -> dict:
+        """
+        Rank documents based on query using embedding similarity
+        
+        Args:
+            query: Query string
+            documents: List of document strings to rank
+            return_documents: Whether to include document text in results
+            top_k: Number of top results to return (None = all)
+        
+        Returns:
+            Dictionary with ranked results
+        """
+        # Format query with instruction
+        formatted_query = get_detailed_instruct(self.rerank_instruction, query)
+        
+        # Combine query and documents for batch processing
+        input_texts = [formatted_query] + documents
+        
+        # Tokenize
+        with torch.no_grad():
+            batch_dict = self.tokenizer(
+                input_texts,
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+            batch_dict = {k: v.to(self.model.device) for k, v in batch_dict.items()}
+            
+            # Get embeddings
+            outputs = self.model(**batch_dict)
+            embeddings = last_token_pool(outputs.last_hidden_state, batch_dict['attention_mask'])
+            
+            # Normalize embeddings
+            embeddings = F.normalize(embeddings, p=2, dim=1)
+            
+            # Calculate scores (query vs documents)
+            query_embedding = embeddings[0:1]  # First embedding is the query
+            doc_embeddings = embeddings[1:]     # Rest are documents
+            scores = (query_embedding @ doc_embeddings.T).squeeze(0)
+            
+            # Convert to list and create results
+            scores_list = scores.cpu().tolist()
+        
+        # Create results list with scores and indices
+        results = []
+        for idx, score in enumerate(scores_list):
+            result = {
+                "index": idx,
+                "score": float(score)
+            }
+            if return_documents:
+                result["document"] = documents[idx]
+            results.append(result)
+        
+        # Sort by score (highest first)
+        results.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Apply top_k if specified
+        if top_k is not None:
+            results = results[:top_k]
+        
+        return {"results": results}
+
 # ----- CPU and System Information -----
 
 def get_cpu_info():
@@ -368,6 +489,10 @@ parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], defau
 parser.add_argument("--qwen-flash-attention", action='store_true',
                    help="Enable flash_attention_2 for Qwen models (requires compatible GPU)")
 
+# Reranking model selection arguments
+parser.add_argument("--reranking-model", type=str, choices=['mixedbread', 'qwen'], default=None,
+                   help="Reranking model to use (default: mixedbread, or qwen if --embedding-model=qwen)")
+
 args, remaining_args = parser.parse_known_args()
 
 # Setup logging level
@@ -471,10 +596,18 @@ app.state.rerank_executor = rerank_executor
 app.state.classification_executor = classification_executor
 app.state.general_executor = general_executor
 
-# Reranking model initialization with device specification
+# Determine which reranking model to use
+# If no reranking model is specified but embedding model is qwen, use qwen for reranking too
+if args.reranking_model is None:
+    if args.embedding_model == 'qwen':
+        reranking_model_choice = 'qwen'
+        logger.info("No reranking model specified, using qwen (same as embedding model)")
+    else:
+        reranking_model_choice = 'mixedbread'
+else:
+    reranking_model_choice = args.reranking_model
+
 logger.info("Initializing models...")
-logger.info(f"Loading rerank model on device: {args.rerank_device}")
-rerank_model = MxbaiRerankV2("mixedbread-ai/mxbai-rerank-base-v2", device=args.rerank_device)
 
 # Embedding model initialization with truncation to specified dimensions and device specification
 logger.info(f"Loading embedding model on device: {args.embedding_device}")
@@ -505,6 +638,65 @@ else:
     embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
     logger.info(f"Using embedding dimensions: {args.embedding_dim}")
     embedding_model = SentenceTransformer(embedding_model_name, truncate_dim=args.embedding_dim, device=args.embedding_device)
+
+# Reranking model initialization with device specification
+logger.info(f"Loading rerank model on device: {args.rerank_device}")
+logger.info(f"Using reranking model: {reranking_model_choice}")
+
+if reranking_model_choice == 'qwen':
+    # Check if we can reuse the embedding model for reranking
+    if (args.embedding_model == 'qwen' and 
+        args.embedding_device == args.rerank_device and
+        not args.qwen_flash_attention):
+        # Reuse the same model for both embedding and reranking to save memory
+        logger.info("♻️  Reusing Qwen embedding model for reranking (memory optimization)")
+        qwen_reranker_model_name = qwen_model_name
+        
+        # Access the underlying transformers model from SentenceTransformer
+        # SentenceTransformer wraps the model, we need the actual AutoModel
+        if hasattr(embedding_model, '_first_module'):
+            # Get the first module which contains the transformer model
+            qwen_tokenizer = embedding_model.tokenizer
+            qwen_transformer_model = embedding_model._first_module().auto_model
+        else:
+            # Fallback: load a new model if we can't access the wrapped one
+            logger.warning("Could not access wrapped model, loading separate reranker")
+            qwen_reranker_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
+            rerank_model = QwenReranker(
+                qwen_reranker_model_name,
+                device=args.rerank_device,
+                use_flash_attention=args.qwen_flash_attention
+            )
+        
+        # Create reranker using the shared model components
+        if 'qwen_transformer_model' in locals():
+            # Create a custom reranker instance that shares the model
+            class SharedQwenReranker(QwenReranker):
+                def __init__(self, tokenizer, model, rerank_instruction):
+                    self.device = model.device
+                    self.rerank_instruction = rerank_instruction
+                    self.max_length = 8192
+                    self.tokenizer = tokenizer
+                    self.model = model
+                    logger.info(f"Qwen reranker initialized using shared model")
+            
+            rerank_model = SharedQwenReranker(
+                qwen_tokenizer,
+                qwen_transformer_model,
+                "Given the following storytelling documents, which of these best add to the user's message?"
+            )
+    else:
+        # Load separate Qwen model for reranking
+        qwen_reranker_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
+        logger.info(f"Loading separate Qwen reranker: {qwen_reranker_model_name}")
+        rerank_model = QwenReranker(
+            qwen_reranker_model_name,
+            device=args.rerank_device,
+            use_flash_attention=args.qwen_flash_attention
+        )
+else:
+    # Use MixedBread reranker (default)
+    rerank_model = MxbaiRerankV2("mixedbread-ai/mxbai-rerank-base-v2", device=args.rerank_device)
 
 logger.info("Models initialized successfully")
 

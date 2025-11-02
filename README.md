@@ -1,6 +1,15 @@
-# llama.cpp-Compatible Embedding Endpoint
+# BananaBread-Emb
 
-This server now includes a llama.cpp-compatible embedding endpoint that allows you to use llama.cpp clients and tools with the mixedbread embedding models.
+A high-performance embedding and reranking server supporting multiple models including MixedBread AI and Qwen3, with llama.cpp-compatible endpoints.
+
+## Features
+
+- **Multiple Model Support**: MixedBread AI and Qwen3 embedding models
+- **Reranking**: Both MixedBread and Qwen3 reranking capabilities
+- **Memory Optimization**: Automatic model reuse when using Qwen for both embedding and reranking
+- **GPU Acceleration**: Optional flash-attention-2 support for faster inference on compatible GPUs
+- **Multiple API Formats**: OpenAI, Ollama, and llama.cpp compatible endpoints
+- **Classification**: Emotion classification using RoBERTa
 
 ## Auth Setup
 Create an empty `api_keys.json` file, and add the following:
@@ -36,6 +45,44 @@ As an example, if you have 32GB of RAM + 16 CPU cores, and would like to allocat
 uv run bananabread-emb --cache-limit 8192 --embedding-cores 8
 ```
 This will keep up to 8GiB of vector embeddings in memory and use half of the CPU for calculating embeddings, dramatically decreasing request latency for already-embedded documents.
+
+### Using Qwen3 Models
+
+BananaBread now supports Qwen3 embedding and reranking models:
+
+```bash
+# Use Qwen for both embedding and reranking (memory optimized - reuses same model)
+uv run bananabread-emb --embedding-model qwen
+
+# Use different Qwen model sizes (0.6B, 4B, 8B)
+uv run bananabread-emb --embedding-model qwen --qwen-size 4B
+
+# Use Qwen embedding with MixedBread reranking
+uv run bananabread-emb --embedding-model qwen --reranking-model mixedbread
+
+# Use Qwen on GPU
+uv run bananabread-emb --embedding-model qwen --embedding-device cuda --rerank-device cuda
+```
+
+### GPU Acceleration with Flash Attention 2
+
+For Linux users with compatible NVIDIA GPUs (requires CUDA 11.8+ or CUDA 12.1+):
+
+```bash
+# Install with GPU support
+pip install -e ".[gpu]"
+
+# Run with flash attention enabled
+uv run bananabread-emb --embedding-model qwen --qwen-flash-attention --embedding-device cuda
+```
+
+**Flash Attention 2 Benefits:**
+- Significantly faster inference on compatible GPUs
+- Reduced memory usage
+- Better performance for long sequences
+- Recommended for production deployments with GPU
+
+**Note**: Flash attention is only available on Linux and requires a compatible NVIDIA GPU with compute capability 7.5+ (RTX 2000 series or newer).
 
 ## Documentation
 Access ReDoc at `https://<ip-of-host>:8008/redoc` for a better understanding of how to interact with the many endpoints of BananaBread.

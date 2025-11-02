@@ -58,6 +58,16 @@ dev = [
     "mypy>=1.0.0",
 ]
 
+# GPU acceleration (Linux only, requires CUDA 11.8+ or CUDA 12.1+)
+gpu = [
+    "flash-attn>=2.3.0",
+]
+
+# All optional dependencies
+all = [
+    "bananabread-emb[dev,gpu]",
+]
+
 [project.urls]
 Homepage = "https://github.com/prolix-oc/bananabread-emb"
 Documentation = "https://github.com/prolix-oc/bananabread-emb#readme"

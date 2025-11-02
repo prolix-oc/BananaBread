@@ -1078,29 +1078,67 @@ import atexit
 import signal
 import threading
 
-# Global shutdown flag
+# Global shutdown flag and lock to prevent multiple cleanup attempts
 shutdown_event = threading.Event()
+cleanup_lock = threading.Lock()
+cleanup_completed = False
+
+# Timeout for thread cleanup (in seconds)
+SHUTDOWN_TIMEOUT = 5.0
 
 def cleanup_threadpools():
-    """Clean up threadpool executors on shutdown"""
-    try:
-        logger.info("Shutting down threadpool executors...")
-        embedding_executor.shutdown(wait=True, cancel_futures=True)
-        rerank_executor.shutdown(wait=True, cancel_futures=True)
-        classification_executor.shutdown(wait=True, cancel_futures=True)
-        general_executor.shutdown(wait=True, cancel_futures=True)
-        logger.info("Threadpool executors shut down successfully")
-    except Exception as e:
-        logger.error(f"Error during threadpool cleanup: {e}")
+    """Clean up threadpool executors on shutdown with timeout"""
+    executors = [
+        ("embedding", embedding_executor),
+        ("rerank", rerank_executor),
+        ("classification", classification_executor),
+        ("general", general_executor)
+    ]
+    
+    for name, executor in executors:
+        try:
+            logger.info(f"Shutting down {name} threadpool executor...")
+            # Cancel all pending futures first
+            executor.shutdown(wait=False, cancel_futures=True)
+            
+            # Wait for threads to complete with timeout
+            # Use a separate thread to implement timeout on shutdown
+            shutdown_thread = threading.Thread(
+                target=lambda: executor.shutdown(wait=True),
+                daemon=True
+            )
+            shutdown_thread.start()
+            shutdown_thread.join(timeout=SHUTDOWN_TIMEOUT)
+            
+            if shutdown_thread.is_alive():
+                logger.warning(f"⚠️  {name} executor shutdown timed out after {SHUTDOWN_TIMEOUT}s")
+            else:
+                logger.info(f"✅ {name} executor shut down successfully")
+        except Exception as e:
+            logger.error(f"Error during {name} executor cleanup: {e}")
 
 def cleanup_resources():
-    """Comprehensive cleanup of all resources"""
-    if not shutdown_event.is_set():
-        shutdown_event.set()
-        logger.info("Initiating graceful shutdown...")
+    """Comprehensive cleanup of all resources with safety checks"""
+    global cleanup_completed
+    
+    # Use lock to ensure cleanup only runs once
+    with cleanup_lock:
+        if cleanup_completed:
+            logger.debug("Cleanup already completed, skipping")
+            return
         
-        # Clean up threadpools
-        cleanup_threadpools()
+        if shutdown_event.is_set():
+            logger.debug("Shutdown already in progress, skipping duplicate cleanup")
+            return
+        
+        shutdown_event.set()
+        logger.info("🔄 Initiating graceful shutdown...")
+        
+        # Clean up threadpools with timeout
+        try:
+            cleanup_threadpools()
+        except Exception as e:
+            logger.error(f"Error during threadpool cleanup: {e}")
         
         # Clean up models and caches
         try:
@@ -1108,27 +1146,27 @@ def cleanup_resources():
             global rerank_cache, embedding_cache
             rerank_cache.clear()
             embedding_cache.clear()
-            logger.info("Model resources cleaned up")
+            logger.info("✅ Model resources cleaned up")
         except Exception as e:
             logger.error(f"Error during model cleanup: {e}")
         
-        logger.info("Graceful shutdown completed")
-        
-        # Force process termination after cleanup
-        import os
-        os._exit(0)
+        # Mark cleanup as completed
+        cleanup_completed = True
+        logger.info("✅ Graceful shutdown completed")
 
 def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully without interrupting the event loop"""
+    """Handle shutdown signals gracefully - minimal work in signal handler"""
     signal_name = signal.Signals(signum).name
-    logger.info(f"Received {signal_name} signal, initiating graceful shutdown...")
+    logger.info(f"📡 Received {signal_name} signal")
     
-    # Set shutdown flag instead of calling sys.exit directly
+    # Set shutdown flag - actual cleanup will happen in main shutdown flow
+    shutdown_event.set()
+    
+    # Signal uvicorn server to exit if it exists
     if 'server' in globals():
         server.should_exit = True
-    cleanup_resources()
 
-# Register signal handlers for graceful shutdown - we'll override these in main
+# Register signal handlers for graceful shutdown
 signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
 signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
 
@@ -1143,6 +1181,7 @@ class CustomServer(uvicorn.Server):
     def __init__(self, config):
         super().__init__(config)
         self._shutdown_requested = False
+        self._shutdown_lock = threading.Lock()
     
     async def startup(self, sockets=None):
         """Override startup to add our custom logging at the right time"""
@@ -1150,32 +1189,42 @@ class CustomServer(uvicorn.Server):
         await super().startup(sockets)
         
         # Now that the server is actually starting up, log our messages
-        logger.info("BananaBread-Emb server is now running!")
-        logger.info(f"Server available at: http://{self.config.host}:{self.config.port}")
-        logger.info(f"API Documentation: http://{self.config.host}:{self.config.port}/docs")
-        logger.info(f"ReDoc Documentation: http://{self.config.host}:{self.config.port}/redoc")
+        logger.info("🍞 BananaBread-Emb server is now running!")
+        logger.info(f"🌐 Server available at: http://{self.config.host}:{self.config.port}")
+        logger.info(f"📚 API Documentation: http://{self.config.host}:{self.config.port}/docs")
+        logger.info(f"📖 ReDoc Documentation: http://{self.config.host}:{self.config.port}/redoc")
     
     async def shutdown(self, sockets=None):
         """Override shutdown to ensure graceful cleanup"""
-        if not self._shutdown_requested:
+        with self._shutdown_lock:
+            if self._shutdown_requested:
+                logger.debug("Shutdown already in progress, skipping duplicate shutdown")
+                return
+            
             self._shutdown_requested = True
-            logger.info("Server shutdown initiated...")
-            
-            # Call our custom cleanup
-            cleanup_resources()
-            
-            # Call the original shutdown
+            logger.info("🛑 Server shutdown initiated...")
+        
+        # Call the original shutdown first to stop accepting new requests
+        try:
             await super().shutdown(sockets)
-            
-            logger.info("Server shutdown completed")
+        except Exception as e:
+            logger.error(f"Error during uvicorn shutdown: {e}")
+        
+        # Then call our custom cleanup
+        cleanup_resources()
+        
+        logger.info("✅ Server shutdown completed")
     
     def handle_exit(self, sig, frame):
         """Handle exit signals more gracefully"""
-        logger.info(f"Received exit signal {sig}, shutting down server...")
+        signal_name = signal.Signals(sig).name if hasattr(signal, 'Signals') else str(sig)
+        logger.info(f"📡 Received exit signal {signal_name}, shutting down server...")
         self.should_exit = True
 
 def main():
     """Main entry point for the bananabread-emb console script"""
+    global server
+    
     # Create uvicorn configuration
     config = uvicorn.Config(
         "server:app",
@@ -1190,32 +1239,33 @@ def main():
     
     # Set up signal handling for the server
     def server_signal_handler(signum, frame):
-        """Handle signals for server shutdown"""
-        signal_name = signal.Signals(signum).name
-        logger.info(f"Received {signal_name} signal, initiating server shutdown...")
+        """Handle signals for server shutdown - minimal work here"""
+        signal_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+        logger.info(f"📡 Received {signal_name} signal, initiating server shutdown...")
         
-        # Set the shutdown flag to trigger uvicorn's graceful shutdown
+        # Only set the shutdown flag - don't call cleanup directly
+        # Cleanup will be handled by uvicorn's shutdown sequence
         server.should_exit = True
-        
-        # Call our comprehensive cleanup
-        cleanup_resources()
     
     # Override the signal handlers to use our server-specific handler
     signal.signal(signal.SIGINT, server_signal_handler)   # Ctrl+C
     signal.signal(signal.SIGTERM, server_signal_handler)  # Termination signal
     
-    logger.info("Initializing BananaBread-Emb server...")
+    # Also handle SIGBREAK on Windows
+    if hasattr(signal, 'SIGBREAK'):
+        signal.signal(signal.SIGBREAK, server_signal_handler)
+    
+    logger.info("🚀 Initializing BananaBread-Emb server...")
     try:
         server.run()
     except KeyboardInterrupt:
-        logger.info("Received KeyboardInterrupt, shutting down gracefully...")
-        cleanup_resources()
+        logger.info("⌨️  Received KeyboardInterrupt, shutting down gracefully...")
     except Exception as e:
-        logger.error(f"Unexpected error during server execution: {e}")
-        cleanup_resources()
+        logger.error(f"❌ Unexpected error during server execution: {e}")
         raise
     finally:
-        # Ensure cleanup always runs
+        # Ensure cleanup always runs at the end
+        logger.info("🧹 Running final cleanup...")
         cleanup_resources()
 
 if __name__ == "__main__":

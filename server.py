@@ -481,6 +481,10 @@ parser.add_argument("--quant", type=str, choices=['standard', 'ubinary', 'int8']
 parser.add_argument("--embedding-dim", type=int, default=1024,
                    help="Embedding dimensions to truncate to (default: 1024)")
 
+# Embedding logging argument
+parser.add_argument("--log-embeddings", action='store_true',
+                   help="Enable logging of embedding queries and results to embeddings.log")
+
 # Embedding model selection arguments
 parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen'], default='mixedbread',
                    help="Embedding model to use (default: mixedbread)")
@@ -497,6 +501,13 @@ args, remaining_args = parser.parse_known_args()
 
 # Setup logging level
 setup_pretty_logging(getattr(logging, args.log_level))
+
+# Embedding logging setup
+EMBEDDING_LOG_FILE = "./embeddings.log"
+EMBEDDING_LOGGING_ENABLED = args.log_embeddings
+
+if EMBEDDING_LOGGING_ENABLED:
+    logger.info(f"📝 Embedding logging enabled: {EMBEDDING_LOG_FILE}")
 
 # ----- CPU Core Selection Logic -----
 
@@ -855,6 +866,43 @@ def get_embedding_cache_key(input_data: list[str]) -> str:
         m.update(item.encode("utf-8"))
     return m.hexdigest()
 
+# ----- Embedding Logging Function -----
+
+def log_embedding_result(inputs: list[str], embeddings: list, metadata: dict):
+    """
+    Log embedding query and results to a JSON file.
+    
+    Args:
+        inputs: List of input texts that were embedded
+        embeddings: List of embedding vectors (as lists of floats)
+        metadata: Dictionary containing additional metadata (model, quantization, etc.)
+    """
+    if not EMBEDDING_LOGGING_ENABLED:
+        return
+    
+    try:
+        import datetime
+        
+        # Create log entry
+        log_entry = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "model": metadata.get("model", embedding_model_name),
+            "quantization": metadata.get("quantization", args.quant),
+            "embedding_dimensions": metadata.get("embedding_dimensions", args.embedding_dim if args.embedding_model == 'mixedbread' else "native"),
+            "num_inputs": len(inputs),
+            "inputs": inputs,
+            "embeddings": embeddings
+        }
+        
+        # Append to log file (create if doesn't exist)
+        with open(EMBEDDING_LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+            
+        logger.debug(f"📝 Logged {len(inputs)} embeddings to {EMBEDDING_LOG_FILE}")
+        
+    except Exception as e:
+        logger.error(f"Failed to log embeddings: {e}")
+
 # ----- Memory Profiling Helper Functions -----
 
 def get_process_memory_usage():
@@ -982,9 +1030,23 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         )
         logger.debug(f"Applied {args.quant} quantization to embeddings")
     
+    # Convert embeddings to list format
+    embeddings_list = docs_embeddings.tolist()
+    
+    # Log the embedding results if logging is enabled
+    log_embedding_result(
+        inputs=inputs,
+        embeddings=embeddings_list,
+        metadata={
+            "model": embedding_model_name,
+            "quantization": args.quant,
+            "embedding_dimensions": args.embedding_dim if args.embedding_model == 'mixedbread' else "native"
+        }
+    )
+    
     # Format response to mimic OpenAI's embeddings API.
     data = []
-    for idx, emb in enumerate(docs_embeddings.tolist()):
+    for idx, emb in enumerate(embeddings_list):
         data.append({
             "object": "embedding",
             "embedding": emb,

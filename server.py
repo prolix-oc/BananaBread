@@ -512,6 +512,24 @@ parser.add_argument("--num-concurrent-embedding", type=int, default=1,
 parser.add_argument("--num-concurrent-rerank", type=int, default=1,
                    help="Number of concurrent reranking model instances to load on GPU (default: 1)")
 
+# Torch compilation arguments
+parser.add_argument("--enable-torch-compile", action='store_true',
+                   help="Enable torch.compile() for models (requires PyTorch 2.0+)")
+parser.add_argument("--torch-compile-mode", type=str, 
+                   choices=['default', 'reduce-overhead', 'max-autotune'], 
+                   default='default',
+                   help="Torch compilation mode (default: default)")
+parser.add_argument("--torch-compile-backend", type=str, default='inductor',
+                   help="Torch compilation backend (default: inductor)")
+
+# Model warmup arguments
+parser.add_argument("--enable-warmup", action='store_true', default=True,
+                   help="Enable model warmup on startup (default: True)")
+parser.add_argument("--disable-warmup", action='store_true',
+                   help="Disable model warmup on startup")
+parser.add_argument("--warmup-samples", type=int, default=3,
+                   help="Number of warmup inference samples to run (default: 3)")
+
 # Embedding model selection arguments
 parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen'], default='mixedbread',
                    help="Embedding model to use (default: mixedbread)")
@@ -710,6 +728,177 @@ class ModelPool:
         """Get all models in the pool (for cleanup, etc.)"""
         return self.models
 
+# ----- Torch Compilation and Warmup Functions -----
+
+def compile_model_if_enabled(model, model_name: str):
+    """
+    Apply torch.compile() to a model if enabled via CLI flags.
+    
+    Args:
+        model: The model to compile
+        model_name: Name of the model (for logging)
+    
+    Returns:
+        The compiled model if compilation is enabled, otherwise the original model
+    """
+    if not args.enable_torch_compile:
+        return model
+    
+    # Check PyTorch version
+    torch_version = torch.__version__.split('+')[0]  # Remove any +cu118 suffix
+    major, minor, patch = torch_version.split('.')[:3]
+    
+    if int(major) < 2:
+        logger.warning(f"⚠️  torch.compile() requires PyTorch 2.0+, current version: {torch.__version__}")
+        logger.warning(f"⚠️  Skipping compilation for {model_name}")
+        return model
+    
+    try:
+        logger.info(f"🔥 Compiling {model_name} with torch.compile()")
+        logger.info(f"   Mode: {args.torch_compile_mode}")
+        logger.info(f"   Backend: {args.torch_compile_backend}")
+        
+        # For SentenceTransformer models, compile the underlying encode method
+        if hasattr(model, 'encode'):
+            # Compile the model's encode function
+            compiled_model = model
+            original_encode = model.encode
+            
+            # Create a wrapper that compiles the internal operations
+            def compiled_encode(*args, **kwargs):
+                return original_encode(*args, **kwargs)
+            
+            # Note: torch.compile works best on the underlying transformer model
+            # For SentenceTransformer, we compile the first module (transformer)
+            if hasattr(model, '_first_module'):
+                try:
+                    transformer = model._first_module()
+                    if hasattr(transformer, 'auto_model'):
+                        logger.info(f"   Compiling underlying transformer model...")
+                        transformer.auto_model = torch.compile(
+                            transformer.auto_model,
+                            mode=args.torch_compile_mode,
+                            backend=args.torch_compile_backend
+                        )
+                        logger.info(f"✅ {model_name} compiled successfully")
+                    else:
+                        logger.warning(f"⚠️  Could not access auto_model for compilation")
+                except Exception as e:
+                    logger.warning(f"⚠️  Failed to compile transformer: {e}")
+            
+            return compiled_model
+        
+        # For QwenReranker or other models with a .model attribute
+        elif hasattr(model, 'model'):
+            logger.info(f"   Compiling underlying model...")
+            model.model = torch.compile(
+                model.model,
+                mode=args.torch_compile_mode,
+                backend=args.torch_compile_backend
+            )
+            logger.info(f"✅ {model_name} compiled successfully")
+            return model
+        
+        else:
+            # Direct compilation
+            compiled = torch.compile(
+                model,
+                mode=args.torch_compile_mode,
+                backend=args.torch_compile_backend
+            )
+            logger.info(f"✅ {model_name} compiled successfully")
+            return compiled
+            
+    except Exception as e:
+        logger.error(f"❌ Failed to compile {model_name}: {e}")
+        logger.warning(f"⚠️  Continuing with uncompiled model")
+        return model
+
+def warmup_model(model, model_type: str, model_name: str, num_samples: int = 3):
+    """
+    Perform warmup inference on a model to trigger compilation and cache warming.
+    
+    Args:
+        model: The model to warm up
+        model_type: Type of model ('embedding', 'rerank', 'classification')
+        model_name: Name of the model (for logging)
+        num_samples: Number of warmup samples to run
+    """
+    if args.disable_warmup:
+        logger.info(f"⏭️  Skipping warmup for {model_name} (disabled via --disable-warmup)")
+        return
+    
+    logger.info(f"🔥 Warming up {model_name} ({model_type})...")
+    logger.info(f"   Running {num_samples} warmup inference(s)...")
+    
+    start_time = time.time()
+    
+    try:
+        with torch.inference_mode():
+            for i in range(num_samples):
+                if model_type == 'embedding':
+                    # Warmup with dummy text of varying lengths
+                    dummy_texts = [
+                        "This is a warmup sample.",
+                        "This is a longer warmup sample with more tokens to test batching behavior.",
+                        "Short warmup."
+                    ]
+                    
+                    if hasattr(model, 'encode'):
+                        # SentenceTransformer
+                        if args.embedding_model == 'qwen':
+                            _ = model.encode([dummy_texts[i % len(dummy_texts)]], prompt_name="query")
+                        else:
+                            _ = model.encode([dummy_texts[i % len(dummy_texts)]])
+                    else:
+                        logger.warning(f"⚠️  Model does not have encode method, skipping warmup")
+                        return
+                
+                elif model_type == 'rerank':
+                    # Warmup with dummy query and documents
+                    dummy_query = "What is machine learning?"
+                    dummy_docs = [
+                        "Machine learning is a subset of artificial intelligence.",
+                        "Deep learning uses neural networks with multiple layers.",
+                        "Python is a popular programming language for data science."
+                    ]
+                    
+                    if hasattr(model, 'rank'):
+                        _ = model.rank(dummy_query, dummy_docs, top_k=2)
+                    else:
+                        logger.warning(f"⚠️  Model does not have rank method, skipping warmup")
+                        return
+                
+                elif model_type == 'classification':
+                    # Warmup with dummy text
+                    dummy_text = "This is a test sentence for classification warmup."
+                    
+                    if callable(model):
+                        _ = model(dummy_text)
+                    else:
+                        logger.warning(f"⚠️  Model is not callable, skipping warmup")
+                        return
+        
+        # Clear CUDA cache after warmup if using GPU
+        if torch.cuda.is_available():
+            device_str = ""
+            if hasattr(model, 'device'):
+                device_str = str(model.device)
+            elif model_type == 'embedding':
+                device_str = args.embedding_device
+            elif model_type == 'rerank':
+                device_str = args.rerank_device
+            
+            if device_str and (device_str.startswith('cuda') or device_str == 'mps'):
+                torch.cuda.empty_cache()
+        
+        elapsed_time = time.time() - start_time
+        logger.info(f"✅ Warmup completed for {model_name} in {elapsed_time:.2f}s")
+        
+    except Exception as e:
+        logger.error(f"❌ Warmup failed for {model_name}: {e}")
+        logger.warning(f"⚠️  Continuing anyway, but first inference may be slower")
+
 # Embedding model initialization with truncation to specified dimensions and device specification
 logger.info(f"Loading embedding model on device: {args.embedding_device}")
 logger.info(f"Using embedding model: {args.embedding_model}")
@@ -720,21 +909,26 @@ def load_embedding_model():
     if args.embedding_model == 'qwen':
         qwen_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
         if args.qwen_flash_attention:
-            return SentenceTransformer(
+            model = SentenceTransformer(
                 qwen_model_name,
                 model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto"},
                 tokenizer_kwargs={"padding_side": "left"},
                 device=args.embedding_device
             )
         else:
-            return SentenceTransformer(qwen_model_name, device=args.embedding_device)
+            model = SentenceTransformer(qwen_model_name, device=args.embedding_device)
     else:
         # MixedBread model
-        return SentenceTransformer(
+        model = SentenceTransformer(
             "mixedbread-ai/mxbai-embed-large-v1",
             truncate_dim=args.embedding_dim,
             device=args.embedding_device
         )
+    
+    # Apply torch.compile() if enabled
+    model = compile_model_if_enabled(model, f"Embedding-{args.embedding_model}")
+    
+    return model
 
 # Determine if we should use a shared pool for both embedding and reranking
 # This happens when using Qwen for both tasks on the same device
@@ -810,6 +1004,21 @@ else:
     
     embedding_model_pool = None
     shared_qwen_pool = None
+
+# Apply torch.compile() to single embedding model if enabled
+if embedding_model is not None and not embedding_model_pool:
+    embedding_model = compile_model_if_enabled(embedding_model, f"Embedding-{args.embedding_model}")
+
+# Warmup embedding model(s)
+if embedding_model_pool:
+    # Warmup all models in pool
+    logger.info(f"🔥 Warming up embedding model pool ({embedding_model_pool.num_instances} instance(s))...")
+    for i, model in enumerate(embedding_model_pool.get_all_models()):
+        logger.info(f"   Warming up embedding model instance {i+1}/{embedding_model_pool.num_instances}")
+        warmup_model(model, 'embedding', f"{embedding_model_name}-{i+1}", num_samples=args.warmup_samples)
+elif embedding_model:
+    # Warmup single model
+    warmup_model(embedding_model, 'embedding', embedding_model_name, num_samples=args.warmup_samples)
 
 # Reranking model initialization with device specification
 logger.info(f"Using reranking model: {reranking_model_choice}")
@@ -971,6 +1180,29 @@ else:
     logger.info(f"Loading rerank model on device: {args.rerank_device}")
     rerank_model = MxbaiRerankV2("mixedbread-ai/mxbai-rerank-base-v2", device=args.rerank_device)
     rerank_model_pool = None
+
+# Apply torch.compile() to single rerank model if enabled
+if rerank_model is not None and not rerank_model_pool and reranking_model_choice != 'qwen':
+    # MixedBread reranker compilation
+    rerank_model = compile_model_if_enabled(rerank_model, f"Rerank-{reranking_model_choice}")
+elif rerank_model is not None and not rerank_model_pool and reranking_model_choice == 'qwen':
+    # Qwen reranker compilation (only if not shared)
+    if not use_shared_qwen_pool:
+        rerank_model = compile_model_if_enabled(rerank_model, f"Rerank-Qwen")
+
+# Warmup reranking model(s)
+if rerank_model_pool:
+    # Warmup all models in pool
+    logger.info(f"🔥 Warming up reranking model pool ({rerank_model_pool.num_instances} instance(s))...")
+    for i, model in enumerate(rerank_model_pool.get_all_models()):
+        logger.info(f"   Warming up reranking model instance {i+1}/{rerank_model_pool.num_instances}")
+        warmup_model(model, 'rerank', f"{reranking_model_choice}-{i+1}", num_samples=args.warmup_samples)
+elif rerank_model and not use_shared_qwen_pool:
+    # Warmup single model (skip if using shared pool, already warmed up)
+    warmup_model(rerank_model, 'rerank', f"Rerank-{reranking_model_choice}", num_samples=args.warmup_samples)
+elif use_shared_qwen_pool:
+    # Shared pool warmup already done during embedding warmup
+    logger.info(f"⏭️  Skipping rerank warmup (using shared pool already warmed up)")
 
 logger.info("Models initialized successfully")
 

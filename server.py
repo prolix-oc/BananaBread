@@ -494,6 +494,16 @@ parser.add_argument("--embedding-dim", type=int, default=1024,
 parser.add_argument("--log-embeddings", action='store_true',
                    help="Enable logging of embedding queries and results to embeddings.log")
 
+# CUDA cache management arguments
+parser.add_argument("--cuda-cache-ttl", type=int, default=300,
+                   help="Time in seconds before clearing CUDA cache when idle (default: 300)")
+parser.add_argument("--cuda-cache-ttl-enabled", action='store_true',
+                   help="Enable automatic CUDA cache clearing based on TTL")
+parser.add_argument("--cuda-min-clear-interval", type=int, default=60,
+                   help="Minimum seconds between CUDA cache clears (default: 60)")
+parser.add_argument("--cuda-memory-threshold", type=int, default=80,
+                   help="Only clear CUDA cache if memory usage exceeds this percentage (default: 80)")
+
 # Embedding model selection arguments
 parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen'], default='mixedbread',
                    help="Embedding model to use (default: mixedbread)")
@@ -719,6 +729,213 @@ else:
     rerank_model = MxbaiRerankV2("mixedbread-ai/mxbai-rerank-base-v2", device=args.rerank_device)
 
 logger.info("Models initialized successfully")
+
+# ----- CUDA Cache Manager -----
+
+class CUDACacheManager:
+    """Manages CUDA cache with TTL-based automatic clearing"""
+    
+    def __init__(self, ttl_seconds: int = 300, min_clear_interval: int = 60, 
+                 memory_threshold: int = 80, enabled: bool = False):
+        """
+        Initialize CUDA cache manager
+        
+        Args:
+            ttl_seconds: Time in seconds before clearing cache when idle
+            min_clear_interval: Minimum seconds between cache clears
+            memory_threshold: Only clear if GPU memory usage > this percentage
+            enabled: Whether automatic clearing is enabled
+        """
+        self.ttl_seconds = ttl_seconds
+        self.min_clear_interval = min_clear_interval
+        self.memory_threshold = memory_threshold
+        self.enabled = enabled
+        
+        # Track last inference and clear times
+        self.last_inference_time = time.time()
+        self.last_clear_time = time.time()
+        self.clear_count = 0
+        
+        # Thread safety
+        self.activity_lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.monitor_thread = None
+        
+        # CUDA availability
+        self.cuda_available = torch.cuda.is_available()
+        
+        if self.enabled and self.cuda_available:
+            logger.info(f"🧹 CUDA Cache Manager enabled:")
+            logger.info(f"   - TTL: {ttl_seconds}s")
+            logger.info(f"   - Min clear interval: {min_clear_interval}s")
+            logger.info(f"   - Memory threshold: {memory_threshold}%")
+            self.start_monitor_thread()
+        elif self.enabled and not self.cuda_available:
+            logger.warning("⚠️  CUDA Cache Manager enabled but CUDA not available")
+        else:
+            logger.info("CUDA Cache Manager disabled (use --cuda-cache-ttl-enabled to enable)")
+    
+    def mark_inference_activity(self):
+        """Mark that an inference operation just occurred"""
+        with self.activity_lock:
+            self.last_inference_time = time.time()
+    
+    def get_cuda_memory_stats(self):
+        """Get CUDA memory statistics"""
+        if not self.cuda_available:
+            return None
+        
+        try:
+            allocated = torch.cuda.memory_allocated(0)
+            reserved = torch.cuda.memory_reserved(0)
+            
+            # Calculate percentage if we can get max memory
+            try:
+                max_memory = torch.cuda.get_device_properties(0).total_memory
+                allocated_pct = (allocated / max_memory) * 100 if max_memory > 0 else 0
+                reserved_pct = (reserved / max_memory) * 100 if max_memory > 0 else 0
+            except:
+                allocated_pct = 0
+                reserved_pct = 0
+            
+            return {
+                "allocated": allocated,
+                "reserved": reserved,
+                "allocated_gb": allocated / (1024**3),
+                "reserved_gb": reserved / (1024**3),
+                "allocated_pct": allocated_pct,
+                "reserved_pct": reserved_pct
+            }
+        except Exception as e:
+            logger.error(f"Error getting CUDA memory stats: {e}")
+            return None
+    
+    def should_clear_cache(self):
+        """Determine if CUDA cache should be cleared"""
+        if not self.cuda_available:
+            return False
+        
+        current_time = time.time()
+        
+        # Check minimum clear interval
+        time_since_last_clear = current_time - self.last_clear_time
+        if time_since_last_clear < self.min_clear_interval:
+            return False
+        
+        # Check if idle for TTL duration
+        time_since_inference = current_time - self.last_inference_time
+        if time_since_inference < self.ttl_seconds:
+            return False
+        
+        # Check memory threshold
+        stats = self.get_cuda_memory_stats()
+        if stats and stats["reserved_pct"] < self.memory_threshold:
+            return False
+        
+        return True
+    
+    def clear_cuda_cache(self, reason: str = "TTL"):
+        """Clear CUDA cache and log statistics"""
+        if not self.cuda_available:
+            return
+        
+        # Get memory stats before clearing
+        stats_before = self.get_cuda_memory_stats()
+        
+        try:
+            # Clear CUDA cache
+            torch.cuda.empty_cache()
+            
+            # Get memory stats after clearing
+            stats_after = self.get_cuda_memory_stats()
+            
+            # Update tracking
+            self.last_clear_time = time.time()
+            self.clear_count += 1
+            
+            # Log the clearing operation
+            if stats_before and stats_after:
+                freed_gb = stats_before["reserved_gb"] - stats_after["reserved_gb"]
+                logger.info(
+                    f"🧹 CUDA cache cleared ({reason}): "
+                    f"Reserved {stats_before['reserved_gb']:.2f}GB → {stats_after['reserved_gb']:.2f}GB "
+                    f"(freed {freed_gb:.2f}GB) | "
+                    f"Allocated {stats_before['allocated_gb']:.2f}GB → {stats_after['allocated_gb']:.2f}GB | "
+                    f"Clear #{self.clear_count}"
+                )
+            else:
+                logger.info(f"🧹 CUDA cache cleared ({reason}) | Clear #{self.clear_count}")
+                
+        except Exception as e:
+            logger.error(f"Error clearing CUDA cache: {e}")
+    
+    def monitor_loop(self):
+        """Background monitoring loop for automatic cache clearing"""
+        logger.info("🔄 CUDA cache monitor thread started")
+        
+        while not self.stop_event.is_set():
+            try:
+                # Check every 10 seconds
+                if self.stop_event.wait(timeout=10):
+                    break
+                
+                # Determine if we should clear cache
+                if self.should_clear_cache():
+                    # Use lock to prevent clearing during inference
+                    with self.activity_lock:
+                        # Double-check after acquiring lock
+                        if self.should_clear_cache():
+                            self.clear_cuda_cache(reason="TTL")
+                
+            except Exception as e:
+                logger.error(f"Error in CUDA cache monitor loop: {e}")
+        
+        logger.info("🔄 CUDA cache monitor thread stopped")
+    
+    def start_monitor_thread(self):
+        """Start the background monitor thread"""
+        if self.monitor_thread is None or not self.monitor_thread.is_alive():
+            self.stop_event.clear()
+            self.monitor_thread = threading.Thread(
+                target=self.monitor_loop,
+                name="cuda-cache-monitor",
+                daemon=True
+            )
+            self.monitor_thread.start()
+    
+    def stop_monitor_thread(self):
+        """Stop the background monitor thread"""
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            logger.info("Stopping CUDA cache monitor thread...")
+            self.stop_event.set()
+            self.monitor_thread.join(timeout=5)
+            if self.monitor_thread.is_alive():
+                logger.warning("⚠️  CUDA cache monitor thread did not stop gracefully")
+    
+    def get_stats(self):
+        """Get statistics about CUDA cache management"""
+        current_time = time.time()
+        return {
+            "enabled": self.enabled,
+            "cuda_available": self.cuda_available,
+            "ttl_seconds": self.ttl_seconds,
+            "min_clear_interval": self.min_clear_interval,
+            "memory_threshold": self.memory_threshold,
+            "clear_count": self.clear_count,
+            "last_clear_time": self.last_clear_time,
+            "last_inference_time": self.last_inference_time,
+            "time_since_last_clear": current_time - self.last_clear_time,
+            "time_since_last_inference": current_time - self.last_inference_time,
+            "cuda_memory": self.get_cuda_memory_stats()
+        }
+
+# Initialize CUDA cache manager
+cuda_cache_manager = CUDACacheManager(
+    ttl_seconds=args.cuda_cache_ttl,
+    min_clear_interval=args.cuda_min_clear_interval,
+    memory_threshold=args.cuda_memory_threshold,
+    enabled=args.cuda_cache_ttl_enabled
+)
 
 def get_cache_size(obj):
     """
@@ -954,6 +1171,9 @@ async def rerank_endpoint(request: RerankRequest, api_key: str = Depends(get_api
     if key in rerank_cache:
         return rerank_cache[key]
     
+    # Mark inference activity for CUDA cache manager
+    cuda_cache_manager.mark_inference_activity()
+    
     # Use dedicated rerank threadpool for optimal CPU utilization
     result = await run_in_threadpool_with_executor(
         rerank_executor, 
@@ -963,6 +1183,12 @@ async def rerank_endpoint(request: RerankRequest, api_key: str = Depends(get_api
         return_documents=request.return_documents,
         top_k=request.top_k
     )
+    
+    # Clear CUDA cache immediately after inference if using GPU
+    if torch.cuda.is_available() and (args.rerank_device.startswith('cuda') or args.rerank_device == 'mps'):
+        torch.cuda.empty_cache()
+        logger.debug("Cleared CUDA cache after reranking")
+    
     rerank_cache[key] = result
     return result
 
@@ -977,6 +1203,9 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
     key = get_embedding_cache_key(inputs) if inputs else ""
     if key in embedding_cache:
         return embedding_cache[key]
+    
+    # Mark inference activity for CUDA cache manager
+    cuda_cache_manager.mark_inference_activity()
     
     # Use dedicated embedding threadpool for optimal CPU utilization
     # Add custom progress tracking for large batches
@@ -1039,8 +1268,17 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         )
         logger.debug(f"Applied {args.quant} quantization to embeddings")
     
+    # Ensure embeddings are on CPU before converting to list (prevents GPU memory leaks in cache)
+    if hasattr(docs_embeddings, 'cpu'):
+        docs_embeddings = docs_embeddings.cpu()
+    
     # Convert embeddings to list format
     embeddings_list = docs_embeddings.tolist()
+    
+    # Clear CUDA cache immediately after inference if using GPU
+    if torch.cuda.is_available() and (args.embedding_device.startswith('cuda') or args.embedding_device == 'mps'):
+        torch.cuda.empty_cache()
+        logger.debug("Cleared CUDA cache after embedding")
     
     # Log the embedding results if logging is enabled
     log_embedding_result(
@@ -1270,6 +1508,7 @@ async def memory_usage(api_key: str = Depends(get_api_key)):
       - Estimated size of the embedding cache
       - GPU memory allocated (if CUDA is available)
       - CPU and threadpool configuration
+      - CUDA cache management statistics
     """
     data = {}
     data["process_memory"] = get_process_memory_usage()
@@ -1291,9 +1530,13 @@ async def memory_usage(api_key: str = Depends(get_api_key)):
     data["classification_threads"] = CLASSIFICATION_THREADS
     data["general_threads"] = GENERAL_THREADS
     
+    # Add CUDA cache management statistics
+    data["cuda_cache_manager"] = cuda_cache_manager.get_stats()
+    
     if torch.cuda.is_available():
         # Report GPU memory allocated on device 0.
         data["gpu_memory_allocated"] = torch.cuda.memory_allocated(0)
+        data["gpu_memory_reserved"] = torch.cuda.memory_reserved(0)
     
     return data
 
@@ -1396,6 +1639,16 @@ def cleanup_resources():
         
         shutdown_event.set()
         logger.info("🔄 Initiating graceful shutdown...")
+        
+        # Stop CUDA cache manager thread
+        try:
+            if cuda_cache_manager.enabled and cuda_cache_manager.cuda_available:
+                cuda_cache_manager.stop_monitor_thread()
+                # Final CUDA cache clear on shutdown
+                if torch.cuda.is_available():
+                    cuda_cache_manager.clear_cuda_cache(reason="shutdown")
+        except Exception as e:
+            logger.error(f"Error during CUDA cache manager cleanup: {e}")
         
         # Clean up threadpools with timeout
         try:

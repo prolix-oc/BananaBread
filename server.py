@@ -670,7 +670,6 @@ else:
     embedding_model = SentenceTransformer(embedding_model_name, truncate_dim=args.embedding_dim, device=args.embedding_device)
 
 # Reranking model initialization with device specification
-logger.info(f"Loading rerank model on device: {args.rerank_device}")
 logger.info(f"Using reranking model: {reranking_model_choice}")
 
 if reranking_model_choice == 'qwen':
@@ -679,7 +678,7 @@ if reranking_model_choice == 'qwen':
         args.embedding_device == args.rerank_device and
         not args.qwen_flash_attention):
         # Reuse the same model for both embedding and reranking to save memory
-        logger.info("♻️  Reusing Qwen embedding model for reranking (memory optimization)")
+        logger.info("♻️  Reusing Qwen embedding model for reranking (memory optimization - no additional model loaded)")
         qwen_reranker_model_name = qwen_model_name
         
         # Access the underlying transformers model from SentenceTransformer
@@ -718,6 +717,7 @@ if reranking_model_choice == 'qwen':
     else:
         # Load separate Qwen model for reranking
         qwen_reranker_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
+        logger.info(f"Loading rerank model on device: {args.rerank_device}")
         logger.info(f"Loading separate Qwen reranker: {qwen_reranker_model_name}")
         rerank_model = QwenReranker(
             qwen_reranker_model_name,
@@ -726,6 +726,7 @@ if reranking_model_choice == 'qwen':
         )
 else:
     # Use MixedBread reranker (default)
+    logger.info(f"Loading rerank model on device: {args.rerank_device}")
     rerank_model = MxbaiRerankV2("mixedbread-ai/mxbai-rerank-base-v2", device=args.rerank_device)
 
 logger.info("Models initialized successfully")

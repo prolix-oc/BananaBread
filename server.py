@@ -663,6 +663,53 @@ else:
 
 logger.info("Initializing models...")
 
+# ----- Model Pool for Concurrent GPU Execution -----
+
+class ModelPool:
+    """
+    Pool of model instances for concurrent GPU execution.
+    Each thread in the threadpool gets its own model instance to avoid CUDA context issues.
+    """
+    
+    def __init__(self, num_instances: int, model_loader_func, model_name: str):
+        """
+        Initialize model pool
+        
+        Args:
+            num_instances: Number of model instances to create
+            model_loader_func: Function that loads and returns a model instance
+            model_name: Name of the model (for logging)
+        """
+        self.num_instances = num_instances
+        self.model_name = model_name
+        self.models = []
+        self.model_index = 0
+        self.lock = threading.Lock()
+        
+        logger.info(f"🔄 Creating model pool for {model_name} with {num_instances} instance(s)...")
+        
+        # Load multiple model instances
+        for i in range(num_instances):
+            logger.info(f"  Loading model instance {i+1}/{num_instances}...")
+            model = model_loader_func()
+            self.models.append(model)
+            
+        logger.info(f"✅ Model pool initialized with {len(self.models)} instance(s)")
+    
+    def get_model(self):
+        """
+        Get next model from pool using round-robin selection.
+        Thread-safe.
+        """
+        with self.lock:
+            model = self.models[self.model_index]
+            self.model_index = (self.model_index + 1) % self.num_instances
+            return model
+    
+    def get_all_models(self):
+        """Get all models in the pool (for cleanup, etc.)"""
+        return self.models
+
 # Embedding model initialization with truncation to specified dimensions and device specification
 logger.info(f"Loading embedding model on device: {args.embedding_device}")
 logger.info(f"Using embedding model: {args.embedding_model}")
@@ -1355,53 +1402,6 @@ def get_model_memory_usage(model):
     except Exception:
         total = None
     return total
-
-# ----- Model Pool for Concurrent GPU Execution -----
-
-class ModelPool:
-    """
-    Pool of model instances for concurrent GPU execution.
-    Each thread in the threadpool gets its own model instance to avoid CUDA context issues.
-    """
-    
-    def __init__(self, num_instances: int, model_loader_func, model_name: str):
-        """
-        Initialize model pool
-        
-        Args:
-            num_instances: Number of model instances to create
-            model_loader_func: Function that loads and returns a model instance
-            model_name: Name of the model (for logging)
-        """
-        self.num_instances = num_instances
-        self.model_name = model_name
-        self.models = []
-        self.model_index = 0
-        self.lock = threading.Lock()
-        
-        logger.info(f"🔄 Creating model pool for {model_name} with {num_instances} instance(s)...")
-        
-        # Load multiple model instances
-        for i in range(num_instances):
-            logger.info(f"  Loading model instance {i+1}/{num_instances}...")
-            model = model_loader_func()
-            self.models.append(model)
-            
-        logger.info(f"✅ Model pool initialized with {len(self.models)} instance(s)")
-    
-    def get_model(self):
-        """
-        Get next model from pool using round-robin selection.
-        Thread-safe.
-        """
-        with self.lock:
-            model = self.models[self.model_index]
-            self.model_index = (self.model_index + 1) % self.num_instances
-            return model
-    
-    def get_all_models(self):
-        """Get all models in the pool (for cleanup, etc.)"""
-        return self.models
 
 # ----- Optimized Threadpool Execution Functions -----
 

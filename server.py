@@ -10,12 +10,14 @@ import hashlib
 import sys
 import psutil
 import torch
-import sys
 import argparse
 import uvicorn
 import logging
 import multiprocessing
 import subprocess
+import threading
+import atexit
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List
 
@@ -1592,10 +1594,6 @@ async def read_root():
     }
 
 # ----- Cleanup and Resource Management -----
-
-import atexit
-import signal
-import threading
 
 # Global shutdown flag and lock to prevent multiple cleanup attempts
 shutdown_event = threading.Event()

@@ -506,6 +506,12 @@ parser.add_argument("--cuda-min-clear-interval", type=int, default=60,
 parser.add_argument("--cuda-memory-threshold", type=int, default=80,
                    help="Only clear CUDA cache if memory usage exceeds this percentage (default: 80)")
 
+# Model concurrency arguments
+parser.add_argument("--num-concurrent-embedding", type=int, default=1,
+                   help="Number of concurrent embedding model instances to load on GPU (default: 1)")
+parser.add_argument("--num-concurrent-rerank", type=int, default=1,
+                   help="Number of concurrent reranking model instances to load on GPU (default: 1)")
+
 # Embedding model selection arguments
 parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen'], default='mixedbread',
                    help="Embedding model to use (default: mixedbread)")
@@ -567,17 +573,19 @@ RERANK_THREADS = args.rerank_threads or CPU_COUNT
 CLASSIFICATION_THREADS = args.classification_threads or max(1, CPU_COUNT // 2)
 GENERAL_THREADS = args.general_threads or CPU_COUNT * 2
 
-# Detect if we'll be using GPU - if so, force single-threaded executors
+# Detect if we'll be using GPU - adjust threadpool size for concurrent model instances
 using_gpu_embedding = args.embedding_device != "cpu"
 using_gpu_rerank = args.rerank_device != "cpu"
 
 if using_gpu_embedding:
-    logger.warning(f"⚠️  Embedding model on GPU ({args.embedding_device}) - using single-threaded executor to prevent CUDA memory issues")
-    EMBEDDING_THREADS = 1
+    # Set threads equal to number of concurrent model instances
+    EMBEDDING_THREADS = args.num_concurrent_embedding
+    logger.info(f"🔄 Embedding model on GPU ({args.embedding_device}) - using {EMBEDDING_THREADS} thread(s) for {args.num_concurrent_embedding} concurrent model instance(s)")
     
 if using_gpu_rerank:
-    logger.warning(f"⚠️  Rerank model on GPU ({args.rerank_device}) - using single-threaded executor to prevent CUDA memory issues")
-    RERANK_THREADS = 1
+    # Set threads equal to number of concurrent model instances
+    RERANK_THREADS = args.num_concurrent_rerank
+    logger.info(f"🔄 Rerank model on GPU ({args.rerank_device}) - using {RERANK_THREADS} thread(s) for {args.num_concurrent_rerank} concurrent model instance(s)")
 
 logger.info("Threadpool Configuration:")
 logger.info(f"  - Embedding threads: {EMBEDDING_THREADS} {'(GPU-safe)' if using_gpu_embedding else '(CPU-optimized)'}")
@@ -659,62 +667,202 @@ logger.info("Initializing models...")
 logger.info(f"Loading embedding model on device: {args.embedding_device}")
 logger.info(f"Using embedding model: {args.embedding_model}")
 
-if args.embedding_model == 'qwen':
-    # Initialize Qwen embedding model
-    qwen_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
-    logger.info(f"Loading Qwen model: {qwen_model_name}")
-    
-    if args.qwen_flash_attention:
-        logger.info("Enabling flash_attention_2 for Qwen model")
-        embedding_model = SentenceTransformer(
-            qwen_model_name,
-            model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto"},
-            tokenizer_kwargs={"padding_side": "left"},
+# Define model loader function for pooling
+def load_embedding_model():
+    """Load a single embedding model instance"""
+    if args.embedding_model == 'qwen':
+        qwen_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
+        if args.qwen_flash_attention:
+            return SentenceTransformer(
+                qwen_model_name,
+                model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto"},
+                tokenizer_kwargs={"padding_side": "left"},
+                device=args.embedding_device
+            )
+        else:
+            return SentenceTransformer(qwen_model_name, device=args.embedding_device)
+    else:
+        # MixedBread model
+        return SentenceTransformer(
+            "mixedbread-ai/mxbai-embed-large-v1",
+            truncate_dim=args.embedding_dim,
             device=args.embedding_device
         )
-    else:
-        embedding_model = SentenceTransformer(qwen_model_name, device=args.embedding_device)
-    
-    # Store model name for later use
+
+# Determine if we should use a shared pool for both embedding and reranking
+# This happens when using Qwen for both tasks on the same device
+use_shared_qwen_pool = (
+    args.embedding_model == 'qwen' and
+    reranking_model_choice == 'qwen' and
+    args.embedding_device == args.rerank_device and
+    not args.qwen_flash_attention and
+    (using_gpu_embedding or using_gpu_rerank) and
+    (args.num_concurrent_embedding > 1 or args.num_concurrent_rerank > 1)
+)
+
+if use_shared_qwen_pool:
+    # Create a shared pool for both embedding and reranking
+    # Pool size is the maximum of the two concurrent settings
+    shared_pool_size = max(args.num_concurrent_embedding, args.num_concurrent_rerank)
+    qwen_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
     embedding_model_name = qwen_model_name
-    # Qwen models don't support truncate_dim in constructor, dimensions are fixed per model
-    logger.info(f"Qwen model loaded (native dimensions)")
+    
+    logger.info(f"♻️  Creating SHARED model pool for both embedding and reranking")
+    logger.info(f"   Using {shared_pool_size} Qwen instance(s) for both tasks")
+    logger.info(f"   Memory savings: Loading {shared_pool_size} models instead of {args.num_concurrent_embedding + args.num_concurrent_rerank}")
+    
+    # Create shared pool
+    shared_qwen_pool = ModelPool(
+        shared_pool_size,
+        load_embedding_model,
+        embedding_model_name
+    )
+    
+    embedding_model_pool = shared_qwen_pool
+    embedding_model = None
+    
+elif using_gpu_embedding and args.num_concurrent_embedding > 1:
+    # Use separate model pool for embedding only
+    if args.embedding_model == 'qwen':
+        embedding_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
+        logger.info(f"Qwen model (native dimensions)")
+    else:
+        embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
+        logger.info(f"Using embedding dimensions: {args.embedding_dim}")
+    
+    embedding_model_pool = ModelPool(
+        args.num_concurrent_embedding,
+        load_embedding_model,
+        embedding_model_name
+    )
+    embedding_model = None  # We'll use the pool instead
+    shared_qwen_pool = None
 else:
-    # Initialize MixedBread embedding model (default)
-    embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
-    logger.info(f"Using embedding dimensions: {args.embedding_dim}")
-    embedding_model = SentenceTransformer(embedding_model_name, truncate_dim=args.embedding_dim, device=args.embedding_device)
+    # Single model instance (traditional approach)
+    if args.embedding_model == 'qwen':
+        qwen_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
+        logger.info(f"Loading Qwen model: {qwen_model_name}")
+        
+        if args.qwen_flash_attention:
+            logger.info("Enabling flash_attention_2 for Qwen model")
+            embedding_model = SentenceTransformer(
+                qwen_model_name,
+                model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto"},
+                tokenizer_kwargs={"padding_side": "left"},
+                device=args.embedding_device
+            )
+        else:
+            embedding_model = SentenceTransformer(qwen_model_name, device=args.embedding_device)
+        
+        embedding_model_name = qwen_model_name
+        logger.info(f"Qwen model loaded (native dimensions)")
+    else:
+        embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
+        logger.info(f"Using embedding dimensions: {args.embedding_dim}")
+        embedding_model = SentenceTransformer(embedding_model_name, truncate_dim=args.embedding_dim, device=args.embedding_device)
+    
+    embedding_model_pool = None
+    shared_qwen_pool = None
 
 # Reranking model initialization with device specification
 logger.info(f"Using reranking model: {reranking_model_choice}")
 
+# Create pool-aware reranker wrapper for shared Qwen pool
+class PooledQwenReranker:
+    """Wrapper for Qwen reranker that uses a model pool"""
+    def __init__(self, model_pool, rerank_instruction: str):
+        self.model_pool = model_pool
+        self.rerank_instruction = rerank_instruction
+        self.max_length = 8192
+        logger.info(f"♻️  Qwen reranker initialized using shared model pool")
+    
+    def rank(self, query: str, documents: list[str], return_documents: bool = False, top_k: int = None) -> dict:
+        """Rank using a model from the shared pool"""
+        # Get a model from the pool
+        model = self.model_pool.get_model()
+        
+        # Format query with instruction
+        formatted_query = get_detailed_instruct(self.rerank_instruction, query)
+        
+        # Combine query and documents for batch processing
+        input_texts = [formatted_query] + documents
+        
+        # Tokenize and process using the pooled model
+        with torch.inference_mode():
+            batch_dict = model.tokenizer(
+                input_texts,
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+            
+            # Get the underlying transformer model from SentenceTransformer
+            if hasattr(model, '_first_module'):
+                transformer_model = model._first_module().auto_model
+                batch_dict = {k: v.to(transformer_model.device) for k, v in batch_dict.items()}
+                
+                # Get embeddings
+                outputs = transformer_model(**batch_dict)
+                embeddings = last_token_pool(outputs.last_hidden_state, batch_dict['attention_mask'])
+                
+                # Normalize embeddings
+                embeddings = F.normalize(embeddings, p=2, dim=1)
+                
+                # Calculate scores
+                query_embedding = embeddings[0:1]
+                doc_embeddings = embeddings[1:]
+                scores = (query_embedding @ doc_embeddings.T).squeeze(0)
+                
+                # Convert to list
+                scores_list = scores.cpu().tolist()
+            else:
+                raise ValueError("Cannot access underlying transformer model from SentenceTransformer")
+        
+        # Create results
+        results = []
+        for idx, score in enumerate(scores_list):
+            result = {
+                "index": idx,
+                "score": float(score)
+            }
+            if return_documents:
+                result["document"] = documents[idx]
+            results.append(result)
+        
+        # Sort by score (highest first)
+        results.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Apply top_k if specified
+        if top_k is not None:
+            results = results[:top_k]
+        
+        return {"results": results}
+
 if reranking_model_choice == 'qwen':
-    # Check if we can reuse the embedding model for reranking
-    if (args.embedding_model == 'qwen' and 
-        args.embedding_device == args.rerank_device and
-        not args.qwen_flash_attention):
-        # Reuse the same model for both embedding and reranking to save memory
+    if use_shared_qwen_pool:
+        # Use the shared pool for reranking
+        logger.info("♻️  Reranker using SHARED pool with embedding model")
+        rerank_model = PooledQwenReranker(
+            shared_qwen_pool,
+            "Given the following storytelling documents, which of these best add to the user's message?"
+        )
+        rerank_model_pool = None  # Using shared pool
+        
+    elif (args.embedding_model == 'qwen' and 
+          args.embedding_device == args.rerank_device and
+          not args.qwen_flash_attention and
+          args.num_concurrent_embedding == 1 and
+          args.num_concurrent_rerank == 1):
+        # Traditional single model sharing (only when both are single instance)
         logger.info("♻️  Reusing Qwen embedding model for reranking (memory optimization - no additional model loaded)")
         qwen_reranker_model_name = qwen_model_name
         
         # Access the underlying transformers model from SentenceTransformer
-        # SentenceTransformer wraps the model, we need the actual AutoModel
         if hasattr(embedding_model, '_first_module'):
-            # Get the first module which contains the transformer model
-            qwen_tokenizer = embedding_model.tokenizer
+            qwen_tokenizer =embedding_model.tokenizer
             qwen_transformer_model = embedding_model._first_module().auto_model
-        else:
-            # Fallback: load a new model if we can't access the wrapped one
-            logger.warning("Could not access wrapped model, loading separate reranker")
-            qwen_reranker_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
-            rerank_model = QwenReranker(
-                qwen_reranker_model_name,
-                device=args.rerank_device,
-                use_flash_attention=args.qwen_flash_attention
-            )
-        
-        # Create reranker using the shared model components
-        if 'qwen_transformer_model' in locals():
+            
             # Create a custom reranker instance that shares the model
             class SharedQwenReranker(QwenReranker):
                 def __init__(self, tokenizer, model, rerank_instruction):
@@ -723,27 +871,59 @@ if reranking_model_choice == 'qwen':
                     self.max_length = 8192
                     self.tokenizer = tokenizer
                     self.model = model
-                    logger.info(f"Qwen reranker initialized using shared model")
+                    logger.info(f"Qwen reranker initialized using shared single model")
             
             rerank_model = SharedQwenReranker(
                 qwen_tokenizer,
                 qwen_transformer_model,
                 "Given the following storytelling documents, which of these best add to the user's message?"
             )
+        else:
+            logger.warning("Could not access wrapped model, loading separate reranker")
+            rerank_model = QwenReranker(
+                f"Qwen/Qwen3-Embedding-{args.qwen_size}",
+                device=args.rerank_device,
+                use_flash_attention=args.qwen_flash_attention
+            )
+        rerank_model_pool = None
+        
     else:
-        # Load separate Qwen model for reranking
+        # Load separate Qwen reranker (or pool if num_concurrent_rerank > 1)
         qwen_reranker_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
-        logger.info(f"Loading rerank model on device: {args.rerank_device}")
-        logger.info(f"Loading separate Qwen reranker: {qwen_reranker_model_name}")
-        rerank_model = QwenReranker(
-            qwen_reranker_model_name,
-            device=args.rerank_device,
-            use_flash_attention=args.qwen_flash_attention
-        )
+        
+        if using_gpu_rerank and args.num_concurrent_rerank > 1:
+            # Create separate pool for reranking
+            logger.info(f"Loading rerank model pool on device: {args.rerank_device}")
+            logger.info(f"Loading separate Qwen reranker pool: {qwen_reranker_model_name}")
+            
+            def load_qwen_reranker():
+                return QwenReranker(
+                    qwen_reranker_model_name,
+                    device=args.rerank_device,
+                    use_flash_attention=args.qwen_flash_attention
+                )
+            
+            rerank_model_pool = ModelPool(
+                args.num_concurrent_rerank,
+                load_qwen_reranker,
+                qwen_reranker_model_name
+            )
+            rerank_model = None  # Using pool
+        else:
+            # Single reranker instance
+            logger.info(f"Loading rerank model on device: {args.rerank_device}")
+            logger.info(f"Loading separate Qwen reranker: {qwen_reranker_model_name}")
+            rerank_model = QwenReranker(
+                qwen_reranker_model_name,
+                device=args.rerank_device,
+                use_flash_attention=args.qwen_flash_attention
+            )
+            rerank_model_pool = None
 else:
     # Use MixedBread reranker (default)
     logger.info(f"Loading rerank model on device: {args.rerank_device}")
     rerank_model = MxbaiRerankV2("mixedbread-ai/mxbai-rerank-base-v2", device=args.rerank_device)
+    rerank_model_pool = None
 
 logger.info("Models initialized successfully")
 
@@ -1176,6 +1356,53 @@ def get_model_memory_usage(model):
         total = None
     return total
 
+# ----- Model Pool for Concurrent GPU Execution -----
+
+class ModelPool:
+    """
+    Pool of model instances for concurrent GPU execution.
+    Each thread in the threadpool gets its own model instance to avoid CUDA context issues.
+    """
+    
+    def __init__(self, num_instances: int, model_loader_func, model_name: str):
+        """
+        Initialize model pool
+        
+        Args:
+            num_instances: Number of model instances to create
+            model_loader_func: Function that loads and returns a model instance
+            model_name: Name of the model (for logging)
+        """
+        self.num_instances = num_instances
+        self.model_name = model_name
+        self.models = []
+        self.model_index = 0
+        self.lock = threading.Lock()
+        
+        logger.info(f"🔄 Creating model pool for {model_name} with {num_instances} instance(s)...")
+        
+        # Load multiple model instances
+        for i in range(num_instances):
+            logger.info(f"  Loading model instance {i+1}/{num_instances}...")
+            model = model_loader_func()
+            self.models.append(model)
+            
+        logger.info(f"✅ Model pool initialized with {len(self.models)} instance(s)")
+    
+    def get_model(self):
+        """
+        Get next model from pool using round-robin selection.
+        Thread-safe.
+        """
+        with self.lock:
+            model = self.models[self.model_index]
+            self.model_index = (self.model_index + 1) % self.num_instances
+            return model
+    
+    def get_all_models(self):
+        """Get all models in the pool (for cleanup, etc.)"""
+        return self.models
+
 # ----- Optimized Threadpool Execution Functions -----
 
 async def run_in_threadpool_with_executor(executor, func, *args, **kwargs):
@@ -1201,14 +1428,24 @@ async def rerank_endpoint(request: RerankRequest, api_key: str = Depends(get_api
     # Mark inference activity for CUDA cache manager
     cuda_cache_manager.mark_inference_activity()
     
+    # Get reranker model (from pool if using concurrent instances, otherwise use global)
+    def get_rerank_model_and_rank(query, documents, return_documents, top_k):
+        """Get model from pool and perform ranking"""
+        if rerank_model_pool:
+            model = rerank_model_pool.get_model()
+        else:
+            model = rerank_model
+        
+        return model.rank(query, documents, return_documents=return_documents, top_k=top_k)
+    
     # Use dedicated rerank threadpool for optimal CPU utilization
     result = await run_in_threadpool_with_executor(
         rerank_executor, 
-        rerank_model.rank,
+        get_rerank_model_and_rank,
         request.query,
         request.documents,
-        return_documents=request.return_documents,
-        top_k=request.top_k
+        request.return_documents,
+        request.top_k
     )
     
     # Clear CUDA cache immediately after inference if using GPU
@@ -1234,6 +1471,20 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
     # Mark inference activity for CUDA cache manager
     cuda_cache_manager.mark_inference_activity()
     
+    # Get model (from pool if using concurrent instances, otherwise use global)
+    def get_embedding_model_and_encode(inputs):
+        """Get model from pool and encode inputs"""
+        if embedding_model_pool:
+            model = embedding_model_pool.get_model()
+        else:
+            model = embedding_model
+        
+        # For Qwen models, use prompt_name="query" for better retrieval performance
+        if args.embedding_model == 'qwen':
+            return model.encode(inputs, prompt_name="query")
+        else:
+            return model.encode(inputs)
+    
     # Use dedicated embedding threadpool for optimal CPU utilization
     # Add custom progress tracking for large batches
     if len(inputs) > 10:  # Only track progress for batches larger than 10 items
@@ -1246,19 +1497,11 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         
         for i in range(0, len(inputs), chunk_size):
             chunk = inputs[i:i + chunk_size]
-            # For Qwen models, use prompt_name="query" for better retrieval performance
-            if args.embedding_model == 'qwen':
-                chunk_embeddings = await run_in_threadpool_with_executor(
-                    embedding_executor,
-                    lambda c: embedding_model.encode(c, prompt_name="query"),
-                    chunk
-                )
-            else:
-                chunk_embeddings = await run_in_threadpool_with_executor(
-                    embedding_executor,
-                    embedding_model.encode,
-                    chunk
-                )
+            chunk_embeddings = await run_in_threadpool_with_executor(
+                embedding_executor,
+                get_embedding_model_and_encode,
+                chunk
+            )
             all_embeddings.append(chunk_embeddings)
             progress_tracker.update(min(i + chunk_size, len(inputs)))
         
@@ -1268,19 +1511,11 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         progress_tracker.finish()
     else:
         # For small batches, process normally
-        # For Qwen models, use prompt_name="query" for better retrieval performance
-        if args.embedding_model == 'qwen':
-            docs_embeddings = await run_in_threadpool_with_executor(
-                embedding_executor,
-                lambda inp: embedding_model.encode(inp, prompt_name="query"),
-                inputs
-            )
-        else:
-            docs_embeddings = await run_in_threadpool_with_executor(
-                embedding_executor,
-                embedding_model.encode,
-                inputs
-            )
+        docs_embeddings = await run_in_threadpool_with_executor(
+            embedding_executor,
+            get_embedding_model_and_encode,
+            inputs
+        )
     
     # Apply quantization based on CLI argument
     if args.quant != 'standard':
@@ -1412,11 +1647,25 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest):
     
     logger.info(f"📄 Processing {len(inputs)} documents for Ollama embeddings")
     
+    # Get model (from pool if using concurrent instances, otherwise use global)
+    def get_embedding_model_and_encode(inputs):
+        """Get model from pool and encode inputs"""
+        if embedding_model_pool:
+            model = embedding_model_pool.get_model()
+        else:
+            model = embedding_model
+        
+        # For Qwen models, use prompt_name="query" for better retrieval performance
+        if args.embedding_model == 'qwen':
+            return model.encode(inputs, prompt_name="query")
+        else:
+            return model.encode(inputs)
+    
     # Generate embeddings using the existing embedding model
     # Use dedicated embedding threadpool for optimal performance
     docs_embeddings = await run_in_threadpool_with_executor(
         embedding_executor,
-        embedding_model.encode,
+        get_embedding_model_and_encode,
         inputs
     )
     
@@ -1466,12 +1715,26 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
     
     logger.info(f"📄 Processing 1 document for Llama.cpp embeddings")
     
+    # Get model (from pool if using concurrent instances, otherwise use global)
+    def get_embedding_model_and_encode(inputs):
+        """Get model from pool and encode inputs"""
+        if embedding_model_pool:
+            model = embedding_model_pool.get_model()
+        else:
+            model = embedding_model
+        
+        # For Qwen models, use prompt_name="query" for better retrieval performance  
+        if args.embedding_model == 'qwen':
+            return model.encode(inputs, prompt_name="query")
+        else:
+            return model.encode(inputs)
+    
     # Generate embedding using the existing embedding model
     # Use dedicated embedding threadpool for optimal performance
     inputs = [request.content]
     docs_embeddings = await run_in_threadpool_with_executor(
         embedding_executor,
-        embedding_model.encode,
+        get_embedding_model_and_encode,
         inputs
     )
     

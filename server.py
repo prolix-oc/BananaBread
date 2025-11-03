@@ -980,13 +980,23 @@ class LimitedCache(OrderedDict):
             old_key, old_value = self.popitem(last=False)
             self.current_size -= get_cache_size(old_value)
 
-# --- Load the classification pipeline globally ---
+# --- Lazy-load the classification pipeline ---
+# The classifier will be loaded only when first needed to save memory
 
-classifier = pipeline(
-    'text-classification',
-    model='SamLowe/roberta-base-go_emotions',
-    top_k=None
-)
+classifier = None
+
+def get_classifier():
+    """Lazy-load the classification pipeline on first use"""
+    global classifier
+    if classifier is None:
+        logger.info("🔄 Loading classification model (first use)...")
+        classifier = pipeline(
+            'text-classification',
+            model='SamLowe/roberta-base-go_emotions',
+            top_k=None
+        )
+        logger.info("✅ Classification model loaded")
+    return classifier
 
 # ----- Logging Setup and Argument Parsing -----
 
@@ -1315,9 +1325,11 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
 @app.post("/v1/classify")
 async def classify_endpoint(request: ClassificationRequest, api_key: str = Depends(get_api_key)):
     # Use dedicated classification threadpool for optimal CPU utilization
+    # Lazy-load classifier on first use
+    clf = get_classifier()
     raw_result = await run_in_threadpool_with_executor(
         classification_executor,
-        classifier,
+        clf,
         request.input
     )
     

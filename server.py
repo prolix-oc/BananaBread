@@ -560,14 +560,28 @@ SELECTED_CORES = select_cpu_cores()
 CPU_COUNT = len(SELECTED_CORES)
 
 # Calculate optimal thread counts based on selected cores
+# IMPORTANT: For GPU models, use single-threaded executor to avoid CUDA context issues
+# PyTorch CUDA models are NOT thread-safe - multiple threads cause separate CUDA allocations
 EMBEDDING_THREADS = args.embedding_threads or CPU_COUNT
 RERANK_THREADS = args.rerank_threads or CPU_COUNT
 CLASSIFICATION_THREADS = args.classification_threads or max(1, CPU_COUNT // 2)
 GENERAL_THREADS = args.general_threads or CPU_COUNT * 2
 
+# Detect if we'll be using GPU - if so, force single-threaded executors
+using_gpu_embedding = args.embedding_device != "cpu"
+using_gpu_rerank = args.rerank_device != "cpu"
+
+if using_gpu_embedding:
+    logger.warning(f"⚠️  Embedding model on GPU ({args.embedding_device}) - using single-threaded executor to prevent CUDA memory issues")
+    EMBEDDING_THREADS = 1
+    
+if using_gpu_rerank:
+    logger.warning(f"⚠️  Rerank model on GPU ({args.rerank_device}) - using single-threaded executor to prevent CUDA memory issues")
+    RERANK_THREADS = 1
+
 logger.info("Threadpool Configuration:")
-logger.info(f"  - Embedding threads: {EMBEDDING_THREADS}")
-logger.info(f"  - Rerank threads: {RERANK_THREADS}")
+logger.info(f"  - Embedding threads: {EMBEDDING_THREADS} {'(GPU-safe)' if using_gpu_embedding else '(CPU-optimized)'}")
+logger.info(f"  - Rerank threads: {RERANK_THREADS} {'(GPU-safe)' if using_gpu_rerank else '(CPU-optimized)'}")
 logger.info(f"  - Classification threads: {CLASSIFICATION_THREADS}")
 logger.info(f"  - General threads: {GENERAL_THREADS}")
 

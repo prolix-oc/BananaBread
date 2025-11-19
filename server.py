@@ -911,7 +911,7 @@ def load_embedding_model():
         if args.qwen_flash_attention:
             model = SentenceTransformer(
                 qwen_model_name,
-                model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto"},
+                model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto", "torch_dtype": torch.float16},
                 tokenizer_kwargs={"padding_side": "left"},
                 device=args.embedding_device
             )
@@ -988,7 +988,7 @@ else:
             logger.info("Enabling flash_attention_2 for Qwen model")
             embedding_model = SentenceTransformer(
                 qwen_model_name,
-                model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto"},
+                model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto", "torch_dtype": torch.float16},
                 tokenizer_kwargs={"padding_side": "left"},
                 device=args.embedding_device
             )

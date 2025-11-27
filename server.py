@@ -225,7 +225,7 @@ logger = logging.getLogger("BananaBread-Emb")
 class QwenRawModel:
     """
     Qwen model implementation using raw transformers (AutoModel/AutoTokenizer).
-    Implements embedding and reranking logic using mean pooling and cosine similarity.
+    Implements embedding and reranking logic using last token pooling and specific prompt formatting.
     """
     def __init__(self, model_name: str, device_arg: str = "cpu", use_flash_attention: bool = False):
         """
@@ -236,8 +236,8 @@ class QwenRawModel:
         
         logger.info(f"Loading Qwen raw model: {model_name}")
         
-        # Initialize tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # Initialize tokenizer with left padding as required for last token pooling
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
         
         # Determine device settings
         kwargs = {}
@@ -273,10 +273,27 @@ class QwenRawModel:
             self.device = self.model.device
             
         self.model.eval()
-        logger.info(f"Qwen raw model initialized on {self.device}")
+        logger.info(f"Qwen raw model initialized on {self.device} with padding_side='left'")
+
+    def last_token_pool(self, last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        """
+        Pooling strategy for Qwen embedding models:
+        Use the embedding of the last token (eos or before padding).
+        """
+        left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+        if left_padding:
+            return last_hidden_states[:, -1]
+        else:
+            sequence_lengths = attention_mask.sum(dim=1) - 1
+            batch_size = last_hidden_states.shape[0]
+            return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
+
+    def get_detailed_instruct(self, task_description: str, query: str) -> str:
+        """Format query with task instruction"""
+        return f'Instruct: {task_description}\nQuery:{query}'
 
     def get_embeddings(self, texts: List[str], batch_size: int = 8) -> torch.Tensor:
-        """Generate embeddings for a list of texts using mean pooling"""
+        """Generate embeddings for a list of texts using last token pooling"""
         embeddings = []
         
         # Process in batches
@@ -287,18 +304,21 @@ class QwenRawModel:
                 padding=True, 
                 truncation=True, 
                 return_tensors="pt", 
-                max_length=512
+                max_length=8192
             ).to(self.model.device)
             
             with torch.inference_mode():
                 outputs = self.model(**inputs)
-                # Mean pooling as requested
-                embeddings.append(outputs.last_hidden_state.mean(dim=1))
+                # Use last token pooling
+                batch_embeddings = self.last_token_pool(outputs.last_hidden_state, inputs['attention_mask'])
+                embeddings.append(batch_embeddings)
                 
         if not embeddings:
             return torch.tensor([])
             
-        return torch.cat(embeddings, dim=0)
+        all_embeddings = torch.cat(embeddings, dim=0)
+        # Normalize embeddings
+        return F.normalize(all_embeddings, p=2, dim=1)
 
     def encode(self, sentences: List[str], prompt_name: str = None, batch_size: int = 8, **kwargs) -> torch.Tensor:
         """
@@ -308,14 +328,18 @@ class QwenRawModel:
         """
         return self.get_embeddings(sentences, batch_size=batch_size)
 
-    def rank(self, query: str, documents: list[str], return_documents: bool = False, top_k: int = None) -> dict:
+    def rank(self, query: str, documents: list[str], return_documents: bool = False, top_k: int = None, task_description: str = None) -> dict:
         """
-        Rerank candidates based on similarity to query using the pipeline from user example.
+        Rerank candidates based on similarity to query using Qwen task instructions.
         """
-        query_emb = self.get_embeddings([query])
+        # Format query with instruction
+        task = task_description if task_description else 'Given a web search query, retrieve relevant passages that answer the query'
+        formatted_query = self.get_detailed_instruct(task, query)
+        
+        query_emb = self.get_embeddings([formatted_query])
         candidate_embs = self.get_embeddings(documents)
         
-        # Cosine similarity
+        # Cosine similarity (inputs are already normalized, so this works as dot product)
         # query_emb is (1, D), candidate_embs is (N, D)
         scores = F.cosine_similarity(query_emb, candidate_embs)
         
@@ -445,7 +469,7 @@ DEFAULTS = {
     "warmup_samples": 3,
     "embedding_model": "mixedbread",
     "qwen_size": "0.6B",
-    "seed": 42
+    "seed": 65
 }
 
 parser = argparse.ArgumentParser(
@@ -487,7 +511,7 @@ Examples:
   python server.py --embedding-dim 512
   
   # Use maximum embedding dimensions (no truncation)
-  python server.py --embedding-dim 2048
+  python server.py --embedding-dim 1024
   
   # Set specific seed (-1 for random)
   python server.py --seed 1337
@@ -1082,12 +1106,12 @@ class PooledQwenReranker:
         self.model_pool = model_pool
         logger.info(f"♻️  Qwen reranker initialized using shared model pool")
     
-    def rank(self, query: str, documents: list[str], return_documents: bool = False, top_k: int = None) -> dict:
+    def rank(self, query: str, documents: list[str], return_documents: bool = False, top_k: int = None, task_description: str = None) -> dict:
         """Rank using a model from the shared pool"""
         # Get a model from the pool
         model = self.model_pool.get_model()
         # Use the rank method of the pooled QwenRawModel
-        return model.rank(query, documents, return_documents=return_documents, top_k=top_k)
+        return model.rank(query, documents, return_documents=return_documents, top_k=top_k, task_description=task_description)
 
 if reranking_model_choice == 'qwen':
     if use_shared_qwen_pool:
@@ -1473,6 +1497,7 @@ class RerankRequest(BaseModel):
     documents: list[str]
     top_k: int = 3
     return_documents: bool = False
+    task_description: Optional[str] = None
 
 # Embedding request schema matching OpenAI's format:
 class EmbeddingRequest(BaseModel):
@@ -1527,13 +1552,15 @@ class LlamaCppEmbeddingResponse(BaseModel):
 
 # ----- Utility Functions for Caching -----
 
-def get_rerank_cache_key(query: str, documents: list[str], top_k: int, return_documents: bool) -> str:
+def get_rerank_cache_key(query: str, documents: list[str], top_k: int, return_documents: bool, task_description: Optional[str] = None) -> str:
     m = hashlib.sha256()
     m.update(query.encode("utf-8"))
     for doc in documents:
         m.update(doc.encode("utf-8"))
     m.update(str(top_k).encode("utf-8"))
     m.update(str(return_documents).encode("utf-8"))
+    if task_description:
+        m.update(task_description.encode("utf-8"))
     return m.hexdigest()
 
 def get_embedding_cache_key(input_data: list[str], encoding_format: str = "float") -> str:
@@ -1623,7 +1650,7 @@ async def rerank_endpoint(request: RerankRequest, api_key: str = Depends(get_api
     if not request.query or not request.documents:
         raise HTTPException(status_code=400, detail="Query or documents must be provided")
     
-    key = get_rerank_cache_key(request.query, request.documents, request.top_k, request.return_documents)
+    key = get_rerank_cache_key(request.query, request.documents, request.top_k, request.return_documents, request.task_description)
     if key in rerank_cache:
         return rerank_cache[key]
     
@@ -1631,14 +1658,18 @@ async def rerank_endpoint(request: RerankRequest, api_key: str = Depends(get_api
     cuda_cache_manager.mark_inference_activity()
     
     # Get reranker model (from pool if using concurrent instances, otherwise use global)
-    def get_rerank_model_and_rank(query, documents, return_documents, top_k):
+    def get_rerank_model_and_rank(query, documents, return_documents, top_k, task_description):
         """Get model from pool and perform ranking"""
         if rerank_model_pool:
             model = rerank_model_pool.get_model()
         else:
             model = rerank_model
         
-        return model.rank(query, documents, return_documents=return_documents, top_k=top_k)
+        try:
+            return model.rank(query, documents, return_documents=return_documents, top_k=top_k, task_description=task_description)
+        except TypeError:
+            # Fallback for models that don't support task_description (e.g. MixedBread)
+            return model.rank(query, documents, return_documents=return_documents, top_k=top_k)
     
     # Use dedicated rerank threadpool for optimal CPU utilization
     result = await run_in_threadpool_with_executor(
@@ -1647,7 +1678,8 @@ async def rerank_endpoint(request: RerankRequest, api_key: str = Depends(get_api
         request.query,
         request.documents,
         request.return_documents,
-        request.top_k
+        request.top_k,
+        request.task_description
     )
     
     # Clear CUDA cache immediately after inference if using GPU

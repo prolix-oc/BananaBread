@@ -18,10 +18,12 @@ import subprocess
 import threading
 import atexit
 import signal
+import random
+import base64
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Union
 
-from transformers import pipeline, AutoTokenizer, AutoModel
+from transformers import pipeline, AutoTokenizer, AutoModel, set_seed
 from collections import OrderedDict
 from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel
@@ -218,128 +220,125 @@ def setup_pretty_logging(level=logging.INFO):
 setup_pretty_logging()
 logger = logging.getLogger("BananaBread-Emb")
 
-# ----- Qwen Reranking Helper Functions -----
+# ----- Qwen Raw Model Class -----
 
-def last_token_pool(last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-    """Pool the last token from hidden states based on attention mask"""
-    left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
-    if left_padding:
-        return last_hidden_states[:, -1]
-    else:
-        sequence_lengths = attention_mask.sum(dim=1) - 1
-        batch_size = last_hidden_states.shape[0]
-        return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
-
-def get_detailed_instruct(task_description: str, query: str) -> str:
-    """Format query with instruction for Qwen reranking"""
-    return f'Instruct: {task_description}\nQuery: {query}'
-
-# ----- Qwen Reranker Class -----
-
-class QwenReranker:
-    """Qwen-based reranking using embedding similarity"""
-    
-    def __init__(self, model_name: str, device: str = "cpu", use_flash_attention: bool = False, 
-                 rerank_instruction: str = "Given the following storytelling documents, which of these best add to the user's message?"):
+class QwenRawModel:
+    """
+    Qwen model implementation using raw transformers (AutoModel/AutoTokenizer).
+    Implements embedding and reranking logic using mean pooling and cosine similarity.
+    """
+    def __init__(self, model_name: str, device_arg: str = "cpu", use_flash_attention: bool = False):
         """
-        Initialize Qwen reranker
-        
-        Args:
-            model_name: Name of the Qwen model to use
-            device: Device to load model on (cpu, cuda, etc.)
-            use_flash_attention: Whether to use flash_attention_2
-            rerank_instruction: Instruction template for reranking tasks
+        Initialize Qwen model using raw transformers.
         """
-        self.device = device
-        self.rerank_instruction = rerank_instruction
-        self.max_length = 8192
+        self.model_name = model_name
+        self.device_arg = device_arg
         
-        logger.info(f"Loading Qwen reranker model: {model_name}")
+        logger.info(f"Loading Qwen raw model: {model_name}")
         
-        # Initialize tokenizer with left padding
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
+        # Initialize tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         
-        # Initialize model
+        # Determine device settings
+        kwargs = {}
         if use_flash_attention:
-            logger.info("Enabling flash_attention_2 for Qwen reranker")
+            kwargs["attn_implementation"] = "flash_attention_2"
+            
+        # Handle device mapping logic
+        if device_arg.lower() == "cpu":
+            device_map = None
+        elif device_arg.lower() in ["auto", "cuda"]:
+            device_map = "auto"
+        else:
+            # Specific cuda device like "cuda:0"
+            device_map = None # We will manually .to() later if needed
+            
+        # Load model
+        if device_map:
             self.model = AutoModel.from_pretrained(
                 model_name,
-                attn_implementation="flash_attention_2",
-                torch_dtype=torch.float16
-            ).to(device)
+                torch_dtype=torch.bfloat16,
+                device_map=device_map,
+                **kwargs
+            )
+            self.device = self.model.device
         else:
-            self.model = AutoModel.from_pretrained(model_name).to(device)
-        
+            self.model = AutoModel.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16,
+                **kwargs
+            )
+            if device_arg.lower() != "cpu":
+                self.model.to(device_arg)
+            self.device = self.model.device
+            
         self.model.eval()
-        logger.info(f"Qwen reranker initialized on {device}")
-    
+        logger.info(f"Qwen raw model initialized on {self.device}")
+
+    def get_embeddings(self, texts: List[str], batch_size: int = 8) -> torch.Tensor:
+        """Generate embeddings for a list of texts using mean pooling"""
+        embeddings = []
+        
+        # Process in batches
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i+batch_size]
+            inputs = self.tokenizer(
+                batch, 
+                padding=True, 
+                truncation=True, 
+                return_tensors="pt", 
+                max_length=512
+            ).to(self.model.device)
+            
+            with torch.inference_mode():
+                outputs = self.model(**inputs)
+                # Mean pooling as requested
+                embeddings.append(outputs.last_hidden_state.mean(dim=1))
+                
+        if not embeddings:
+            return torch.tensor([])
+            
+        return torch.cat(embeddings, dim=0)
+
+    def encode(self, sentences: List[str], prompt_name: str = None, batch_size: int = 8, **kwargs) -> torch.Tensor:
+        """
+        Compatibility wrapper for SentenceTransformer's encode.
+        Ignores prompt_name as per user's simplified example (or adds if strictly needed).
+        Returns torch tensor (endpoints expect .tolist() or something convertible).
+        """
+        return self.get_embeddings(sentences, batch_size=batch_size)
+
     def rank(self, query: str, documents: list[str], return_documents: bool = False, top_k: int = None) -> dict:
         """
-        Rank documents based on query using embedding similarity
-        
-        Args:
-            query: Query string
-            documents: List of document strings to rank
-            return_documents: Whether to include document text in results
-            top_k: Number of top results to return (None = all)
-        
-        Returns:
-            Dictionary with ranked results
+        Rerank candidates based on similarity to query using the pipeline from user example.
         """
-        # Format query with instruction
-        formatted_query = get_detailed_instruct(self.rerank_instruction, query)
+        query_emb = self.get_embeddings([query])
+        candidate_embs = self.get_embeddings(documents)
         
-        # Combine query and documents for batch processing
-        input_texts = [formatted_query] + documents
+        # Cosine similarity
+        # query_emb is (1, D), candidate_embs is (N, D)
+        scores = F.cosine_similarity(query_emb, candidate_embs)
         
-        # Tokenize - using inference_mode() for better memory efficiency
-        with torch.inference_mode():
-            batch_dict = self.tokenizer(
-                input_texts,
-                padding=True,
-                truncation=True,
-                max_length=self.max_length,
-                return_tensors="pt",
-            )
-            batch_dict = {k: v.to(self.model.device) for k, v in batch_dict.items()}
+        # Sort by score
+        # torch.argsort sorts ascending by default, so we use descending=True
+        if top_k is not None:
+            top_indices = torch.argsort(scores, descending=True)[:top_k]
+        else:
+            top_indices = torch.argsort(scores, descending=True)
             
-            # Get embeddings
-            outputs = self.model(**batch_dict)
-            embeddings = last_token_pool(outputs.last_hidden_state, batch_dict['attention_mask'])
-            
-            # Normalize embeddings
-            embeddings = F.normalize(embeddings, p=2, dim=1)
-            
-            # Calculate scores (query vs documents)
-            query_embedding = embeddings[0:1]  # First embedding is the query
-            doc_embeddings = embeddings[1:]     # Rest are documents
-            scores = (query_embedding @ doc_embeddings.T).squeeze(0)
-            
-            # Convert to list and create results
-            scores_list = scores.cpu().tolist()
-        
-        # Clear CUDA cache to reduce fragmentation if using GPU
-        if self.device != "cpu" and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        # Create results list with scores and indices
         results = []
-        for idx, score in enumerate(scores_list):
+        scores_list = scores.tolist()
+        top_indices_list = top_indices.tolist()
+        
+        for idx in top_indices_list:
             result = {
                 "index": idx,
-                "score": float(score)
+                "score": float(scores_list[idx])
             }
             if return_documents:
                 result["document"] = documents[idx]
             results.append(result)
-        
-        # Sort by score (highest first)
-        results.sort(key=lambda x: x["score"], reverse=True)
-        
-        # Apply top_k if specified
-        if top_k is not None:
-            results = results[:top_k]
-        
+            
         return {"results": results}
 
 # ----- CPU and System Information -----
@@ -412,7 +411,42 @@ logger.info(f"Available Sockets: {len(AVAILABLE_SOCKETS)}")
 for socket_id, cores in AVAILABLE_SOCKETS.items():
     logger.info(f"  - Socket {socket_id}: Cores {min(cores)}-{max(cores)} ({len(cores)} cores)")
 
-# ----- Enhanced Argument Parsing -----
+# ----- Config File and Argument Parsing -----
+
+CONFIG_FILE = "config.json"
+
+def load_config() -> Dict[str, Any]:
+    """Load configuration from JSON file if exists"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                logger.info(f"📄 Loaded configuration from {CONFIG_FILE}")
+                return config
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to load config file: {e}")
+    return {}
+
+# Define defaults for arguments
+DEFAULTS = {
+    "cache_limit": 1024,
+    "embedding_device": "cpu",
+    "rerank_device": "cpu",
+    "log_level": "INFO",
+    "quant": "standard",
+    "embedding_dim": 1024,
+    "cuda_cache_ttl": 300,
+    "cuda_min_clear_interval": 60,
+    "cuda_memory_threshold": 80,
+    "num_concurrent_embedding": 1,
+    "num_concurrent_rerank": 1,
+    "torch_compile_mode": "default",
+    "torch_compile_backend": "inductor",
+    "warmup_samples": 3,
+    "embedding_model": "mixedbread",
+    "qwen_size": "0.6B",
+    "seed": 42
+}
 
 parser = argparse.ArgumentParser(
     description="BananaBread-Emb - Optimized MixedBread AI Server",
@@ -454,95 +488,123 @@ Examples:
   
   # Use maximum embedding dimensions (no truncation)
   python server.py --embedding-dim 2048
+  
+  # Set specific seed (-1 for random)
+  python server.py --seed 1337
     """
 )
 
 # CPU and core selection arguments
-parser.add_argument("--use-cores", type=int, default=None, 
+parser.add_argument("--use-cores", type=int, default=DEFAULTS.get("use_cores"), 
                    help=f"Number of physical CPU cores to use (default: all {TOTAL_PHYSICAL_CORES} cores)")
-parser.add_argument("--cpu-socket", type=int, choices=list(range(len(AVAILABLE_SOCKETS))), default=None,
+parser.add_argument("--cpu-socket", type=int, choices=list(range(len(AVAILABLE_SOCKETS))), default=DEFAULTS.get("cpu_socket"),
                    help="Pin operations to specific CPU socket (for multi-socket systems)")
 
 # Existing threadpool arguments
-parser.add_argument("--cache-limit", type=int, default=1024, help="Cache limit in MB")
-parser.add_argument("--embedding-threads", type=int, default=None, 
+parser.add_argument("--cache-limit", type=int, default=DEFAULTS["cache_limit"], help=f"Cache limit in MB (default: {DEFAULTS['cache_limit']})")
+parser.add_argument("--embedding-threads", type=int, default=DEFAULTS.get("embedding_threads"), 
                    help="Number of threads for embedding operations (default: auto-detected)")
-parser.add_argument("--rerank-threads", type=int, default=None,
+parser.add_argument("--rerank-threads", type=int, default=DEFAULTS.get("rerank_threads"),
                    help="Number of threads for reranking operations (default: auto-detected)")
-parser.add_argument("--classification-threads", type=int, default=None,
+parser.add_argument("--classification-threads", type=int, default=DEFAULTS.get("classification_threads"),
                    help="Number of threads for classification operations (default: auto-detected)")
-parser.add_argument("--general-threads", type=int, default=None,
+parser.add_argument("--general-threads", type=int, default=DEFAULTS.get("general_threads"),
                    help="Number of threads for general operations (default: auto-detected)")
 
 # Device selection arguments
-parser.add_argument("--embedding-device", type=str, default="cpu",
-                   help="Device to load embedding model on (cpu, cuda, cuda:0, cuda:1, mps, etc.)")
-parser.add_argument("--rerank-device", type=str, default="cpu",
-                   help="Device to load rerank model on (cpu, cuda, cuda:0, cuda:1, mps, etc.)")
+parser.add_argument("--embedding-device", type=str, default=DEFAULTS["embedding_device"],
+                   help=f"Device to load embedding model on (default: {DEFAULTS['embedding_device']})")
+parser.add_argument("--rerank-device", type=str, default=DEFAULTS["rerank_device"],
+                   help=f"Device to load rerank model on (default: {DEFAULTS['rerank_device']})")
 
 # Logging arguments
-parser.add_argument("--log-level", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default='INFO',
-                   help="Set logging level (default: INFO)")
+parser.add_argument("--log-level", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default=DEFAULTS["log_level"],
+                   help=f"Set logging level (default: {DEFAULTS['log_level']})")
 
 # Quantization arguments
-parser.add_argument("--quant", type=str, choices=['standard', 'ubinary', 'int8'], default='standard',
-                   help="Quantization precision for embeddings (default: standard)")
+parser.add_argument("--quant", type=str, choices=['standard', 'ubinary', 'int8'], default=DEFAULTS["quant"],
+                   help=f"Quantization precision for embeddings (default: {DEFAULTS['quant']})")
 
 # Embedding dimensions argument
-parser.add_argument("--embedding-dim", type=int, default=1024,
-                   help="Embedding dimensions to truncate to (default: 1024)")
+parser.add_argument("--embedding-dim", type=int, default=DEFAULTS["embedding_dim"],
+                   help=f"Embedding dimensions to truncate to (default: {DEFAULTS['embedding_dim']})")
 
 # Embedding logging argument
-parser.add_argument("--log-embeddings", action='store_true',
+parser.add_argument("--log-embeddings", action='store_true', default=DEFAULTS.get("log_embeddings", False),
                    help="Enable logging of embedding queries and results to embeddings.log")
 
 # CUDA cache management arguments
-parser.add_argument("--cuda-cache-ttl", type=int, default=300,
-                   help="Time in seconds before clearing CUDA cache when idle (default: 300)")
-parser.add_argument("--cuda-cache-ttl-enabled", action='store_true',
+parser.add_argument("--cuda-cache-ttl", type=int, default=DEFAULTS["cuda_cache_ttl"],
+                   help=f"Time in seconds before clearing CUDA cache when idle (default: {DEFAULTS['cuda_cache_ttl']})")
+parser.add_argument("--cuda-cache-ttl-enabled", action='store_true', default=DEFAULTS.get("cuda_cache_ttl_enabled", False),
                    help="Enable automatic CUDA cache clearing based on TTL")
-parser.add_argument("--cuda-min-clear-interval", type=int, default=60,
-                   help="Minimum seconds between CUDA cache clears (default: 60)")
-parser.add_argument("--cuda-memory-threshold", type=int, default=80,
-                   help="Only clear CUDA cache if memory usage exceeds this percentage (default: 80)")
+parser.add_argument("--cuda-min-clear-interval", type=int, default=DEFAULTS["cuda_min_clear_interval"],
+                   help=f"Minimum seconds between CUDA cache clears (default: {DEFAULTS['cuda_min_clear_interval']})")
+parser.add_argument("--cuda-memory-threshold", type=int, default=DEFAULTS["cuda_memory_threshold"],
+                   help=f"Only clear CUDA cache if memory usage exceeds this percentage (default: {DEFAULTS['cuda_memory_threshold']})")
 
 # Model concurrency arguments
-parser.add_argument("--num-concurrent-embedding", type=int, default=1,
-                   help="Number of concurrent embedding model instances to load on GPU (default: 1)")
-parser.add_argument("--num-concurrent-rerank", type=int, default=1,
-                   help="Number of concurrent reranking model instances to load on GPU (default: 1)")
+parser.add_argument("--num-concurrent-embedding", type=int, default=DEFAULTS["num_concurrent_embedding"],
+                   help=f"Number of concurrent embedding model instances to load on GPU (default: {DEFAULTS['num_concurrent_embedding']})")
+parser.add_argument("--num-concurrent-rerank", type=int, default=DEFAULTS["num_concurrent_rerank"],
+                   help=f"Number of concurrent reranking model instances to load on GPU (default: {DEFAULTS['num_concurrent_rerank']})")
 
 # Torch compilation arguments
-parser.add_argument("--enable-torch-compile", action='store_true',
+parser.add_argument("--enable-torch-compile", action='store_true', default=DEFAULTS.get("enable_torch_compile", False),
                    help="Enable torch.compile() for models (requires PyTorch 2.0+)")
 parser.add_argument("--torch-compile-mode", type=str, 
                    choices=['default', 'reduce-overhead', 'max-autotune'], 
-                   default='default',
-                   help="Torch compilation mode (default: default)")
-parser.add_argument("--torch-compile-backend", type=str, default='inductor',
-                   help="Torch compilation backend (default: inductor)")
+                   default=DEFAULTS["torch_compile_mode"],
+                   help=f"Torch compilation mode (default: {DEFAULTS['torch_compile_mode']})")
+parser.add_argument("--torch-compile-backend", type=str, default=DEFAULTS["torch_compile_backend"],
+                   help=f"Torch compilation backend (default: {DEFAULTS['torch_compile_backend']})")
 
 # Model warmup arguments
-parser.add_argument("--enable-warmup", action='store_true', default=True,
+parser.add_argument("--enable-warmup", action='store_true', default=DEFAULTS.get("enable_warmup", True),
                    help="Enable model warmup on startup (default: True)")
 parser.add_argument("--disable-warmup", action='store_true',
                    help="Disable model warmup on startup")
-parser.add_argument("--warmup-samples", type=int, default=3,
-                   help="Number of warmup inference samples to run (default: 3)")
+parser.add_argument("--warmup-samples", type=int, default=DEFAULTS["warmup_samples"],
+                   help=f"Number of warmup inference samples to run (default: {DEFAULTS['warmup_samples']})")
 
 # Embedding model selection arguments
-parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen'], default='mixedbread',
-                   help="Embedding model to use (default: mixedbread)")
-parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default='0.6B',
-                   help="Qwen model size to use when --embedding-model=qwen (default: 0.6B)")
-parser.add_argument("--qwen-flash-attention", action='store_true',
+parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen'], default=DEFAULTS["embedding_model"],
+                   help=f"Embedding model to use (default: {DEFAULTS['embedding_model']})")
+parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default=DEFAULTS["qwen_size"],
+                   help=f"Qwen model size to use when --embedding-model=qwen (default: {DEFAULTS['qwen_size']})")
+parser.add_argument("--qwen-flash-attention", action='store_true', default=DEFAULTS.get("qwen_flash_attention", False),
                    help="Enable flash_attention_2 for Qwen models (requires compatible GPU)")
 
 # Reranking model selection arguments
-parser.add_argument("--reranking-model", type=str, choices=['mixedbread', 'qwen'], default=None,
+parser.add_argument("--reranking-model", type=str, choices=['mixedbread', 'qwen'], default=DEFAULTS.get("reranking_model"),
                    help="Reranking model to use (default: mixedbread, or qwen if --embedding-model=qwen)")
 
+# Determinism
+parser.add_argument("--seed", type=int, default=DEFAULTS["seed"],
+                    help="Random seed for reproducibility. Set to -1 for random seed. (default: 42)")
+
+
+# Load configuration and apply to parser defaults
+# This allows CLI arguments to override config file, and config file to override hardcoded defaults
+config = load_config()
+if config:
+    parser.set_defaults(**config)
+    logger.info("⚙️  Applied configuration defaults from file")
+
 args, remaining_args = parser.parse_known_args()
+
+# Apply seed
+if args.seed == -1:
+    args.seed = random.randint(0, 2**32 - 1)
+    logger.info(f"🎲 Using random seed: {args.seed}")
+else:
+    logger.info(f"🎲 Using fixed seed: {args.seed}")
+
+set_seed(args.seed)
+random.seed(args.seed)
+torch.manual_seed(args.seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 # Setup logging level
 setup_pretty_logging(getattr(logging, args.log_level))
@@ -760,7 +822,18 @@ def compile_model_if_enabled(model, model_name: str):
         
         # For SentenceTransformer models, compile the underlying encode method
         if hasattr(model, 'encode'):
-            # Compile the model's encode function
+            # Check if it's our QwenRawModel wrapper - compilation support for raw HF models
+            if isinstance(model, QwenRawModel):
+                logger.info(f"   Compiling underlying HF model for QwenRawModel...")
+                model.model = torch.compile(
+                    model.model,
+                    mode=args.torch_compile_mode,
+                    backend=args.torch_compile_backend
+                )
+                logger.info(f"✅ {model_name} compiled successfully")
+                return model
+
+            # Compile the model's encode function for SentenceTransformers
             compiled_model = model
             original_encode = model.encode
             
@@ -787,17 +860,6 @@ def compile_model_if_enabled(model, model_name: str):
                     logger.warning(f"⚠️  Failed to compile transformer: {e}")
             
             return compiled_model
-        
-        # For QwenReranker or other models with a .model attribute
-        elif hasattr(model, 'model'):
-            logger.info(f"   Compiling underlying model...")
-            model.model = torch.compile(
-                model.model,
-                mode=args.torch_compile_mode,
-                backend=args.torch_compile_backend
-            )
-            logger.info(f"✅ {model_name} compiled successfully")
-            return model
         
         else:
             # Direct compilation
@@ -845,11 +907,8 @@ def warmup_model(model, model_type: str, model_name: str, num_samples: int = 3):
                     ]
                     
                     if hasattr(model, 'encode'):
-                        # SentenceTransformer
-                        if args.embedding_model == 'qwen':
-                            _ = model.encode([dummy_texts[i % len(dummy_texts)]], prompt_name="query")
-                        else:
-                            _ = model.encode([dummy_texts[i % len(dummy_texts)]])
+                        # SentenceTransformer or QwenRawModel
+                        _ = model.encode([dummy_texts[i % len(dummy_texts)]])
                     else:
                         logger.warning(f"⚠️  Model does not have encode method, skipping warmup")
                         return
@@ -908,15 +967,12 @@ def load_embedding_model():
     """Load a single embedding model instance"""
     if args.embedding_model == 'qwen':
         qwen_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
-        if args.qwen_flash_attention:
-            model = SentenceTransformer(
-                qwen_model_name,
-                model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto", "torch_dtype": torch.float16},
-                tokenizer_kwargs={"padding_side": "left"},
-                device=args.embedding_device
-            )
-        else:
-            model = SentenceTransformer(qwen_model_name, device=args.embedding_device)
+        # Use the raw transformer implementation for Qwen as requested
+        model = QwenRawModel(
+            qwen_model_name,
+            device_arg=args.embedding_device,
+            use_flash_attention=args.qwen_flash_attention
+        )
     else:
         # MixedBread model
         model = SentenceTransformer(
@@ -984,19 +1040,15 @@ else:
         qwen_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
         logger.info(f"Loading Qwen model: {qwen_model_name}")
         
-        if args.qwen_flash_attention:
-            logger.info("Enabling flash_attention_2 for Qwen model")
-            embedding_model = SentenceTransformer(
-                qwen_model_name,
-                model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto", "torch_dtype": torch.float16},
-                tokenizer_kwargs={"padding_side": "left"},
-                device=args.embedding_device
-            )
-        else:
-            embedding_model = SentenceTransformer(qwen_model_name, device=args.embedding_device)
+        # Use raw model implementation
+        embedding_model = QwenRawModel(
+            qwen_model_name, 
+            device_arg=args.embedding_device,
+            use_flash_attention=args.qwen_flash_attention
+        )
         
         embedding_model_name = qwen_model_name
-        logger.info(f"Qwen model loaded (native dimensions)")
+        logger.info(f"Qwen model loaded (native dimensions, raw transformer impl)")
     else:
         embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
         logger.info(f"Using embedding dimensions: {args.embedding_dim}")
@@ -1026,83 +1078,22 @@ logger.info(f"Using reranking model: {reranking_model_choice}")
 # Create pool-aware reranker wrapper for shared Qwen pool
 class PooledQwenReranker:
     """Wrapper for Qwen reranker that uses a model pool"""
-    def __init__(self, model_pool, rerank_instruction: str):
+    def __init__(self, model_pool):
         self.model_pool = model_pool
-        self.rerank_instruction = rerank_instruction
-        self.max_length = 8192
         logger.info(f"♻️  Qwen reranker initialized using shared model pool")
     
     def rank(self, query: str, documents: list[str], return_documents: bool = False, top_k: int = None) -> dict:
         """Rank using a model from the shared pool"""
         # Get a model from the pool
         model = self.model_pool.get_model()
-        
-        # Format query with instruction
-        formatted_query = get_detailed_instruct(self.rerank_instruction, query)
-        
-        # Combine query and documents for batch processing
-        input_texts = [formatted_query] + documents
-        
-        # Tokenize and process using the pooled model
-        with torch.inference_mode():
-            batch_dict = model.tokenizer(
-                input_texts,
-                padding=True,
-                truncation=True,
-                max_length=self.max_length,
-                return_tensors="pt",
-            )
-            
-            # Get the underlying transformer model from SentenceTransformer
-            if hasattr(model, '_first_module'):
-                transformer_model = model._first_module().auto_model
-                batch_dict = {k: v.to(transformer_model.device) for k, v in batch_dict.items()}
-                
-                # Get embeddings
-                outputs = transformer_model(**batch_dict)
-                embeddings = last_token_pool(outputs.last_hidden_state, batch_dict['attention_mask'])
-                
-                # Normalize embeddings
-                embeddings = F.normalize(embeddings, p=2, dim=1)
-                
-                # Calculate scores
-                query_embedding = embeddings[0:1]
-                doc_embeddings = embeddings[1:]
-                scores = (query_embedding @ doc_embeddings.T).squeeze(0)
-                
-                # Convert to list
-                scores_list = scores.cpu().tolist()
-            else:
-                raise ValueError("Cannot access underlying transformer model from SentenceTransformer")
-        
-        # Create results
-        results = []
-        for idx, score in enumerate(scores_list):
-            result = {
-                "index": idx,
-                "score": float(score)
-            }
-            if return_documents:
-                result["document"] = documents[idx]
-            results.append(result)
-        
-        # Sort by score (highest first)
-        results.sort(key=lambda x: x["score"], reverse=True)
-        
-        # Apply top_k if specified
-        if top_k is not None:
-            results = results[:top_k]
-        
-        return {"results": results}
+        # Use the rank method of the pooled QwenRawModel
+        return model.rank(query, documents, return_documents=return_documents, top_k=top_k)
 
 if reranking_model_choice == 'qwen':
     if use_shared_qwen_pool:
         # Use the shared pool for reranking
         logger.info("♻️  Reranker using SHARED pool with embedding model")
-        rerank_model = PooledQwenReranker(
-            shared_qwen_pool,
-            "Given the following storytelling documents, which of these best add to the user's message?"
-        )
+        rerank_model = PooledQwenReranker(shared_qwen_pool)
         rerank_model_pool = None  # Using shared pool
         
     elif (args.embedding_model == 'qwen' and 
@@ -1112,35 +1103,8 @@ if reranking_model_choice == 'qwen':
           args.num_concurrent_rerank == 1):
         # Traditional single model sharing (only when both are single instance)
         logger.info("♻️  Reusing Qwen embedding model for reranking (memory optimization - no additional model loaded)")
-        qwen_reranker_model_name = qwen_model_name
-        
-        # Access the underlying transformers model from SentenceTransformer
-        if hasattr(embedding_model, '_first_module'):
-            qwen_tokenizer =embedding_model.tokenizer
-            qwen_transformer_model = embedding_model._first_module().auto_model
-            
-            # Create a custom reranker instance that shares the model
-            class SharedQwenReranker(QwenReranker):
-                def __init__(self, tokenizer, model, rerank_instruction):
-                    self.device = model.device
-                    self.rerank_instruction = rerank_instruction
-                    self.max_length = 8192
-                    self.tokenizer = tokenizer
-                    self.model = model
-                    logger.info(f"Qwen reranker initialized using shared single model")
-            
-            rerank_model = SharedQwenReranker(
-                qwen_tokenizer,
-                qwen_transformer_model,
-                "Given the following storytelling documents, which of these best add to the user's message?"
-            )
-        else:
-            logger.warning("Could not access wrapped model, loading separate reranker")
-            rerank_model = QwenReranker(
-                f"Qwen/Qwen3-Embedding-{args.qwen_size}",
-                device=args.rerank_device,
-                use_flash_attention=args.qwen_flash_attention
-            )
+        # embedding_model IS a QwenRawModel which already has a .rank() method
+        rerank_model = embedding_model
         rerank_model_pool = None
         
     else:
@@ -1150,12 +1114,11 @@ if reranking_model_choice == 'qwen':
         if using_gpu_rerank and args.num_concurrent_rerank > 1:
             # Create separate pool for reranking
             logger.info(f"Loading rerank model pool on device: {args.rerank_device}")
-            logger.info(f"Loading separate Qwen reranker pool: {qwen_reranker_model_name}")
             
             def load_qwen_reranker():
-                return QwenReranker(
+                return QwenRawModel(
                     qwen_reranker_model_name,
-                    device=args.rerank_device,
+                    device_arg=args.rerank_device,
                     use_flash_attention=args.qwen_flash_attention
                 )
             
@@ -1168,10 +1131,9 @@ if reranking_model_choice == 'qwen':
         else:
             # Single reranker instance
             logger.info(f"Loading rerank model on device: {args.rerank_device}")
-            logger.info(f"Loading separate Qwen reranker: {qwen_reranker_model_name}")
-            rerank_model = QwenReranker(
+            rerank_model = QwenRawModel(
                 qwen_reranker_model_name,
-                device=args.rerank_device,
+                device_arg=args.rerank_device,
                 use_flash_attention=args.qwen_flash_attention
             )
             rerank_model_pool = None
@@ -1187,7 +1149,7 @@ if rerank_model is not None and not rerank_model_pool and reranking_model_choice
     rerank_model = compile_model_if_enabled(rerank_model, f"Rerank-{reranking_model_choice}")
 elif rerank_model is not None and not rerank_model_pool and reranking_model_choice == 'qwen':
     # Qwen reranker compilation (only if not shared)
-    if not use_shared_qwen_pool:
+    if not use_shared_qwen_pool and rerank_model != embedding_model:
         rerank_model = compile_model_if_enabled(rerank_model, f"Rerank-Qwen")
 
 # Warmup reranking model(s)
@@ -1197,12 +1159,12 @@ if rerank_model_pool:
     for i, model in enumerate(rerank_model_pool.get_all_models()):
         logger.info(f"   Warming up reranking model instance {i+1}/{rerank_model_pool.num_instances}")
         warmup_model(model, 'rerank', f"{reranking_model_choice}-{i+1}", num_samples=args.warmup_samples)
-elif rerank_model and not use_shared_qwen_pool:
-    # Warmup single model (skip if using shared pool, already warmed up)
+elif rerank_model and not use_shared_qwen_pool and rerank_model != embedding_model:
+    # Warmup single model (skip if using shared pool or shared instance, already warmed up)
     warmup_model(rerank_model, 'rerank', f"Rerank-{reranking_model_choice}", num_samples=args.warmup_samples)
-elif use_shared_qwen_pool:
+elif use_shared_qwen_pool or rerank_model == embedding_model:
     # Shared pool warmup already done during embedding warmup
-    logger.info(f"⏭️  Skipping rerank warmup (using shared pool already warmed up)")
+    logger.info(f"⏭️  Skipping rerank warmup (using shared model/pool already warmed up)")
 
 logger.info("Models initialized successfully")
 
@@ -1515,7 +1477,9 @@ class RerankRequest(BaseModel):
 # Embedding request schema matching OpenAI's format:
 class EmbeddingRequest(BaseModel):
     model: str = "mixedbread-ai/mxbai-embed-large-v1"
-    input: list[str]
+    input: Union[str, List[str], List[int], List[List[int]]]
+    encoding_format: str = "float" # float or base64
+    user: Optional[str] = None
 
 class ClassificationRequest(BaseModel):
     input: str
@@ -1572,10 +1536,11 @@ def get_rerank_cache_key(query: str, documents: list[str], top_k: int, return_do
     m.update(str(return_documents).encode("utf-8"))
     return m.hexdigest()
 
-def get_embedding_cache_key(input_data: list[str]) -> str:
+def get_embedding_cache_key(input_data: list[str], encoding_format: str = "float") -> str:
     m = hashlib.sha256()
     for item in input_data:
         m.update(item.encode("utf-8"))
+    m.update(encoding_format.encode("utf-8"))
     return m.hexdigest()
 
 # ----- Embedding Logging Function -----
@@ -1629,7 +1594,12 @@ def get_model_memory_usage(model):
     """
     total = 0
     try:
-        for param in model.parameters():
+        # For QwenRawModel or SentenceTransformer
+        actual_model = model
+        if hasattr(model, "model"):
+            actual_model = model.model
+            
+        for param in actual_model.parameters():
             total += param.numel() * param.element_size()
     except Exception:
         total = None
@@ -1690,13 +1660,25 @@ async def rerank_endpoint(request: RerankRequest, api_key: str = Depends(get_api
 
 @app.post("/v1/embeddings")
 async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(get_api_key)):
-    inputs = request.input if isinstance(request.input, list) else [request.input]
+    # Handle single string input or list of strings
+    if isinstance(request.input, str):
+        inputs = [request.input]
+    elif isinstance(request.input, list):
+        # We don't support token arrays (list[int] or list[list[int]]) fully yet, assume strings or fail elegantly
+        if len(request.input) > 0 and isinstance(request.input[0], int):
+             raise HTTPException(status_code=400, detail="Token array input is not supported yet, please provide text.")
+        elif len(request.input) > 0 and isinstance(request.input[0], list):
+             raise HTTPException(status_code=400, detail="Token array input is not supported yet, please provide text.")
+        inputs = request.input
+    else:
+        raise HTTPException(status_code=400, detail="Input must be a string or list of strings")
+
     if not inputs:
         raise HTTPException(status_code=400, detail="Input must be provided")
     
-    logger.info(f"📄 Processing {len(inputs)} documents for embeddings")
+    logger.info(f"📄 Processing {len(inputs)} documents for embeddings (format: {request.encoding_format})")
     
-    key = get_embedding_cache_key(inputs) if inputs else ""
+    key = get_embedding_cache_key(inputs, request.encoding_format) if inputs else ""
     if key in embedding_cache:
         return embedding_cache[key]
     
@@ -1711,9 +1693,10 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         else:
             model = embedding_model
         
-        # For Qwen models, use prompt_name="query" for better retrieval performance
+        # For Qwen models, we used to set prompt_name="query" but now with raw impl
+        # we just call encode which maps to get_embeddings (no prompt needed)
         if args.embedding_model == 'qwen':
-            return model.encode(inputs, prompt_name="query")
+            return model.encode(inputs)
         else:
             return model.encode(inputs)
     
@@ -1724,6 +1707,7 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         progress_tracker.start()
         
         # Process in smaller chunks to show progress
+        # For Qwen, model has internal batching, but we chunk here for progress reporting
         chunk_size = max(1, len(inputs) // 10)  # Process in 10% chunks
         all_embeddings = []
         
@@ -1739,7 +1723,19 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         
         # Combine all chunks
         import numpy as np
-        docs_embeddings = np.concatenate(all_embeddings, axis=0)
+        # Depending on model type, chunk_embeddings might be list, numpy array, or tensor
+        # QwenRawModel returns tensor. SentenceTransformer default returns numpy array.
+        
+        processed_chunks = []
+        for chunk in all_embeddings:
+            if hasattr(chunk, 'cpu'): # It's a tensor
+                processed_chunks.append(chunk.cpu().numpy())
+            elif isinstance(chunk, list):
+                processed_chunks.append(np.array(chunk))
+            else:
+                processed_chunks.append(chunk)
+                
+        docs_embeddings = np.concatenate(processed_chunks, axis=0)
         progress_tracker.finish()
     else:
         # For small batches, process normally
@@ -1766,18 +1762,36 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
     if hasattr(docs_embeddings, 'cpu'):
         docs_embeddings = docs_embeddings.cpu()
     
-    # Convert embeddings to list format
-    embeddings_list = docs_embeddings.tolist()
+    # Convert embeddings to list format based on encoding_format
+    if request.encoding_format == "base64":
+        # Ensure it's numpy array first
+        import numpy as np
+        if not isinstance(docs_embeddings, np.ndarray):
+            docs_embeddings = docs_embeddings.numpy()
+        
+        # We need float32 for base64 encoding usually
+        docs_embeddings = docs_embeddings.astype(np.float32)
+        
+        embeddings_list = []
+        for emb in docs_embeddings:
+            # Convert to bytes and then base64 string
+            emb_bytes = emb.tobytes()
+            emb_b64 = base64.b64encode(emb_bytes).decode("utf-8")
+            embeddings_list.append(emb_b64)
+    else:
+        # Standard float list
+        embeddings_list = docs_embeddings.tolist()
     
     # Clear CUDA cache immediately after inference if using GPU
     if torch.cuda.is_available() and (args.embedding_device.startswith('cuda') or args.embedding_device == 'mps'):
         torch.cuda.empty_cache()
         logger.debug("Cleared CUDA cache after embedding")
     
-    # Log the embedding results if logging is enabled
+    # Log the embedding results if logging is enabled (don't log huge base64 strings fully if possible)
+    log_data = embeddings_list if request.encoding_format != "base64" else ["<base64_encoded_data>"] * len(embeddings_list)
     log_embedding_result(
         inputs=inputs,
-        embeddings=embeddings_list,
+        embeddings=log_data,
         metadata={
             "model": embedding_model_name,
             "quantization": args.quant,
@@ -1887,11 +1901,7 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest):
         else:
             model = embedding_model
         
-        # For Qwen models, use prompt_name="query" for better retrieval performance
-        if args.embedding_model == 'qwen':
-            return model.encode(inputs, prompt_name="query")
-        else:
-            return model.encode(inputs)
+        return model.encode(inputs)
     
     # Generate embeddings using the existing embedding model
     # Use dedicated embedding threadpool for optimal performance
@@ -1905,10 +1915,16 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest):
     # For multiple inputs, Ollama typically returns the first embedding
     # (this matches Ollama's behavior where embeddings are generated one at a time)
     if len(inputs) == 1:
-        embedding = docs_embeddings[0].tolist()
+        if hasattr(docs_embeddings, 'tolist'):
+            embedding = docs_embeddings[0].tolist()
+        else:
+            embedding = docs_embeddings[0]
     else:
         # For multiple inputs, return the first embedding (Ollama convention)
-        embedding = docs_embeddings[0].tolist()
+        if hasattr(docs_embeddings, 'tolist'):
+            embedding = docs_embeddings[0].tolist()
+        else:
+            embedding = docs_embeddings[0]
     
     # Ensure embedding is a list[float] for type safety
     if not isinstance(embedding, list):
@@ -1955,11 +1971,7 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
         else:
             model = embedding_model
         
-        # For Qwen models, use prompt_name="query" for better retrieval performance  
-        if args.embedding_model == 'qwen':
-            return model.encode(inputs, prompt_name="query")
-        else:
-            return model.encode(inputs)
+        return model.encode(inputs)
     
     # Generate embedding using the existing embedding model
     # Use dedicated embedding threadpool for optimal performance
@@ -1971,7 +1983,10 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
     )
     
     # Get the embedding and convert to list
-    embedding = docs_embeddings[0].tolist()
+    if hasattr(docs_embeddings, 'tolist'):
+         embedding = docs_embeddings[0].tolist()
+    else:
+         embedding = docs_embeddings[0]
     
     # Ensure embedding is always a proper list[float] for type safety
     # Handle nested lists by flattening if necessary
@@ -2036,11 +2051,8 @@ async def memory_usage(api_key: str = Depends(get_api_key)):
     """
     data = {}
     data["process_memory"] = get_process_memory_usage()
-    # Try to get memory usage from each model. For rerank_model, attempt to use its underlying model if available.
-    if hasattr(rerank_model, "model"):
-        data["rerank_model_memory"] = get_model_memory_usage(rerank_model.model)
-    else:
-        data["rerank_model_memory"] = get_model_memory_usage(rerank_model)
+    # Try to get memory usage from each model.
+    data["rerank_model_memory"] = get_model_memory_usage(rerank_model)
     data["embedding_model_memory"] = get_model_memory_usage(embedding_model)
     data["embedding_cache_memory"] = get_cache_size(embedding_cache)
     

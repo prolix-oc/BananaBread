@@ -2122,6 +2122,9 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
 
         # Process all embeddings
         if hasattr(docs_embeddings, 'cpu'):
+            # Convert BFloat16 to Float32 before converting to numpy
+            if docs_embeddings.dtype == torch.bfloat16:
+                docs_embeddings = docs_embeddings.to(torch.float32)
             docs_embeddings = docs_embeddings.cpu().numpy()
         elif isinstance(docs_embeddings, list):
             import numpy as np

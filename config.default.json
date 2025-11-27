@@ -21,5 +21,5 @@
     "qwen_size": "0.6B",
     "qwen_flash_attention": false,
     "reranking_model": null,
-    "seed": 42
+    "seed": 65
 }

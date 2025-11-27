@@ -2117,7 +2117,7 @@ async def model(api_key: str = Depends(get_api_key)):
     return {"object": "list",
             "data": [
                 {
-                    "id": "mixedbread-large-v1",
+                    "id": embedding_model_name,
                     "object": "model",
                     "created": "176257272",
                     "owned_by": "urmom"

@@ -20,6 +20,7 @@ import atexit
 import signal
 import random
 import base64
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Dict, Any, Union
 
@@ -1741,17 +1742,35 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         # Process in smaller chunks to show progress
         # For Qwen, model has internal batching, but we chunk here for progress reporting
         chunk_size = max(1, len(inputs) // 10)  # Process in 10% chunks
-        all_embeddings = []
         
-        for i in range(0, len(inputs), chunk_size):
-            chunk = inputs[i:i + chunk_size]
-            chunk_embeddings = await run_in_threadpool_with_executor(
+        tasks = []
+        async def process_chunk(chunk, start_idx):
+            result = await run_in_threadpool_with_executor(
                 embedding_executor,
                 get_embedding_model_and_encode,
                 chunk
             )
-            all_embeddings.append(chunk_embeddings)
-            progress_tracker.update(min(i + chunk_size, len(inputs)))
+            return start_idx, result, len(chunk)
+
+        # Create tasks for concurrent execution
+        for i in range(0, len(inputs), chunk_size):
+            chunk = inputs[i:i + chunk_size]
+            tasks.append(process_chunk(chunk, i))
+        
+        # Execute concurrently and track progress
+        results_unsorted = []
+        completed_count = 0
+        
+        for task in asyncio.as_completed(tasks):
+            idx, res, count = await task
+            results_unsorted.append((idx, res))
+            completed_count += count
+            progress_tracker.update(completed_count)
+            
+        # Sort results by start_idx to ensure matching payload order
+        results_unsorted.sort(key=lambda x: x[0])
+        
+        all_embeddings = [r[1] for r in results_unsorted]
         
         # Combine all chunks
         import numpy as np

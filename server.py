@@ -2009,150 +2009,165 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
     This endpoint does not require API key authentication.
     Follows llama.cpp server API specification for embeddings.
     """
-    if not request.content:
-        raise HTTPException(status_code=400, detail="Content must be provided")
-    
-    # Handle both single string and list of strings
-    if isinstance(request.content, str):
-        inputs = [request.content]
-        is_batch = False
-    else:
-        inputs = request.content
-        is_batch = True
+    try:
+        if not request.content:
+            raise HTTPException(status_code=400, detail="Content must be provided")
         
-    logger.info(f"📄 Processing {len(inputs)} document(s) for Llama.cpp embeddings")
-    
-    # Get model (from pool if using concurrent instances, otherwise use global)
-    def get_embedding_model_and_encode(inputs):
-        """Get model from pool and encode inputs"""
-        if embedding_model_pool:
-            model = embedding_model_pool.get_model()
+        # Handle both single string and list of strings
+        if isinstance(request.content, str):
+            inputs = [request.content]
+            is_batch = False
         else:
-            model = embedding_model
+            inputs = request.content
+            is_batch = True
+            
+        logger.info(f"📄 Processing {len(inputs)} document(s) for Llama.cpp embeddings")
         
-        return model.encode(inputs)
-    
-    # Use dedicated embedding threadpool for optimal CPU utilization
-    # Reuse the same concurrent batch processing logic as normal embeddings
-    if len(inputs) > 10:  # Only track progress/chunk for batches larger than 10 items
-        # Process in smaller chunks to show progress
-        chunk_size = max(1, len(inputs) // 10)  # Process in 10% chunks
+        # Get model (from pool if using concurrent instances, otherwise use global)
+        def get_embedding_model_and_encode(inputs):
+            """Get model from pool and encode inputs"""
+            if embedding_model_pool:
+                model = embedding_model_pool.get_model()
+            else:
+                model = embedding_model
+            
+            return model.encode(inputs)
         
-        tasks = []
-        async def process_chunk(chunk, start_idx):
-            result = await run_in_threadpool_with_executor(
+        # Use dedicated embedding threadpool for optimal CPU utilization
+        # Reuse the same concurrent batch processing logic as normal embeddings
+        if len(inputs) > 10:  # Only track progress/chunk for batches larger than 10 items
+            # Process in smaller chunks to show progress
+            chunk_size = max(1, len(inputs) // 10)  # Process in 10% chunks
+            
+            tasks = []
+            async def process_chunk(chunk, start_idx):
+                result = await run_in_threadpool_with_executor(
+                    embedding_executor,
+                    get_embedding_model_and_encode,
+                    chunk
+                )
+                return start_idx, result
+
+            # Create tasks for concurrent execution
+            for i in range(0, len(inputs), chunk_size):
+                chunk = inputs[i:i + chunk_size]
+                tasks.append(process_chunk(chunk, i))
+            
+            # Execute concurrently
+            results_unsorted = []
+            for task in asyncio.as_completed(tasks):
+                idx, res = await task
+                results_unsorted.append((idx, res))
+                
+            # Sort results by start_idx to ensure matching payload order
+            results_unsorted.sort(key=lambda x: x[0])
+            
+            chunk_results = [r[1] for r in results_unsorted]
+            
+            # Combine all chunks
+            import numpy as np
+            
+            processed_chunks = []
+            for chunk in chunk_results:
+                if hasattr(chunk, 'cpu'): # It's a tensor
+                    processed_chunks.append(chunk.cpu().numpy())
+                elif isinstance(chunk, list):
+                    processed_chunks.append(np.array(chunk))
+                else:
+                    processed_chunks.append(chunk)
+                    
+            docs_embeddings = np.concatenate(processed_chunks, axis=0)
+        else:
+            # For small batches, process normally
+            docs_embeddings = await run_in_threadpool_with_executor(
                 embedding_executor,
                 get_embedding_model_and_encode,
-                chunk
+                inputs
             )
-            return start_idx, result
+        
+        # Helper to clean/convert a single embedding vector
+        def process_vector(vec, normalize=True):
+            if hasattr(vec, 'tolist'):
+                vec_list = vec.tolist()
+            else:
+                vec_list = vec
+                
+            # Ensure flat list of floats
+            def flatten_to_float_list(obj):
+                if isinstance(obj, (int, float)):
+                    return [float(obj)]
+                elif isinstance(obj, list):
+                    result = []
+                    for item in obj:
+                        result.extend(flatten_to_float_list(item))
+                    return result
+                elif hasattr(obj, 'tolist'): # Handle numpy scalars or arrays
+                    return flatten_to_float_list(obj.tolist())
+                else:
+                    return [0.0]
+                    
+            vec_list = flatten_to_float_list(vec_list)
+            
+            if normalize:
+                import numpy as np
+                arr = np.array(vec_list, dtype=np.float64)
+                norm = np.linalg.norm(arr)
+                if norm > 0:
+                    arr = arr / norm
+                    vec_list = arr.tolist()
+                    
+            # Final type safety check
+            vec_list = [float(x) if isinstance(x, (int, float)) else 0.0 for x in vec_list]
+            return vec_list
 
-        # Create tasks for concurrent execution
-        for i in range(0, len(inputs), chunk_size):
-            chunk = inputs[i:i + chunk_size]
-            tasks.append(process_chunk(chunk, i))
-        
-        # Execute concurrently
-        results_unsorted = []
-        for task in asyncio.as_completed(tasks):
-            idx, res = await task
-            results_unsorted.append((idx, res))
-            
-        # Sort results by start_idx to ensure matching payload order
-        results_unsorted.sort(key=lambda x: x[0])
-        
-        chunk_results = [r[1] for r in results_unsorted]
-        
-        # Combine all chunks
-        import numpy as np
-        
-        processed_chunks = []
-        for chunk in chunk_results:
-            if hasattr(chunk, 'cpu'): # It's a tensor
-                processed_chunks.append(chunk.cpu().numpy())
-            elif isinstance(chunk, list):
-                processed_chunks.append(np.array(chunk))
-            else:
-                processed_chunks.append(chunk)
-                
-        docs_embeddings = np.concatenate(processed_chunks, axis=0)
-    else:
-        # For small batches, process normally
-        docs_embeddings = await run_in_threadpool_with_executor(
-            embedding_executor,
-            get_embedding_model_and_encode,
-            inputs
-        )
-    
-    # Convert results similar to original logic
-    # docs_embeddings is likely a numpy array or tensor of shape (N, D)
-    
-    # Helper to clean/convert a single embedding vector
-    def process_vector(vec, normalize=True):
-        if hasattr(vec, 'tolist'):
-            vec_list = vec.tolist()
-        else:
-            vec_list = vec
-            
-        # Ensure flat list of floats
-        def flatten_to_float_list(obj):
-            if isinstance(obj, (int, float)):
-                return [float(obj)]
-            elif isinstance(obj, list):
-                result = []
-                for item in obj:
-                    result.extend(flatten_to_float_list(item))
-                return result
-            else:
-                return [0.0]
-                
-        vec_list = flatten_to_float_list(vec_list)
-        
-        if normalize:
+        # Process all embeddings
+        if hasattr(docs_embeddings, 'cpu'):
+            docs_embeddings = docs_embeddings.cpu().numpy()
+        elif isinstance(docs_embeddings, list):
             import numpy as np
-            arr = np.array(vec_list, dtype=np.float64)
-            norm = np.linalg.norm(arr)
-            if norm > 0:
-                arr = arr / norm
-                vec_list = arr.tolist()
+            docs_embeddings = np.array(docs_embeddings)
+
+        # Ensure we have a 2D array structure (samples x dimension)
+        # If we have 1 input, some models return (D,) instead of (1, D)
+        if hasattr(docs_embeddings, 'shape'):
+             if len(docs_embeddings.shape) == 1 and len(inputs) == 1:
+                 # Reshape to (1, D)
+                 docs_embeddings = docs_embeddings.reshape(1, -1)
+             # If we have multiple inputs but only 1D, that's ambiguous, but usually means D
+             elif len(docs_embeddings.shape) == 1 and len(inputs) > 1:
+                 # This should likely not happen unless output is scalars?
+                 pass
+
+        # docs_embeddings should be (N, D)
+        final_embeddings = []
+        for i in range(len(inputs)):
+            # Extract the vector for this input (safely handle if docs_embeddings is not indexable as expected)
+            try:
+                vec = docs_embeddings[i]
+            except Exception as e:
+                logger.error(f"Error accessing embedding index {i}: {e}")
+                # Fallback if something went wrong with batching logic
+                vec = docs_embeddings if len(inputs) == 1 else []
                 
-        # Final type safety check
-        vec_list = [float(x) if isinstance(x, (int, float)) else 0.0 for x in vec_list]
-        return vec_list
-
-    # Process all embeddings
-    if hasattr(docs_embeddings, 'cpu'):
-        docs_embeddings = docs_embeddings.cpu().numpy()
-    elif isinstance(docs_embeddings, list):
-        import numpy as np
-        docs_embeddings = np.array(docs_embeddings)
-
-    # docs_embeddings should be (N, D)
-    final_embeddings = []
-    for i in range(len(inputs)):
-        # Extract the vector for this input (safely handle if docs_embeddings is not indexable as expected)
-        try:
-            vec = docs_embeddings[i]
-        except:
-            # Fallback if something went wrong with batching logic
-            vec = docs_embeddings if len(inputs) == 1 else []
-            
-        processed_vec = process_vector(vec, normalize=request.normalize)
-        final_embeddings.append(processed_vec)
-    
-    # Return single vector if single input (for backward compatibility), list of vectors if batch
-    if not is_batch and len(final_embeddings) == 1:
-        response_embedding = final_embeddings[0]
-    else:
-        response_embedding = final_embeddings
-    
-    # Format response according to llama.cpp API specification
-    response = LlamaCppEmbeddingResponse(
-        embedding=response_embedding,
-        model=embedding_model_name
-    )
-    
-    return response
+            processed_vec = process_vector(vec, normalize=request.normalize)
+            final_embeddings.append(processed_vec)
+        
+        # Return single vector if single input (for backward compatibility), list of vectors if batch
+        if not is_batch and len(final_embeddings) == 1:
+            response_embedding = final_embeddings[0]
+        else:
+            response_embedding = final_embeddings
+        
+        # Format response according to llama.cpp API specification
+        response = LlamaCppEmbeddingResponse(
+            embedding=response_embedding,
+            model=embedding_model_name
+        )
+        
+        return response
+    except Exception as e:
+        logger.error(f"❌ Error in llamacpp_embedding_endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/v1/embeddings/llamacpp")
 async def llamacpp_embedding_endpoint_v1(request: LlamaCppEmbeddingRequest):

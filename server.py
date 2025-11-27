@@ -1542,13 +1542,13 @@ class OllamaResponse(BaseModel):
 # ----- Llama.cpp Compatible Schemas -----
 
 class LlamaCppEmbeddingRequest(BaseModel):
-    content: str
+    content: Union[str, List[str]]
     model: str = "mixedbread-ai/mxbai-embed-large-v1"
     normalize: bool = True
     truncate: bool = True
 
 class LlamaCppEmbeddingResponse(BaseModel):
-    embedding: list[float]
+    embedding: Union[list[float], list[list[float]]]
     model: str
 
 # ----- Utility Functions for Caching -----
@@ -2012,7 +2012,15 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
     if not request.content:
         raise HTTPException(status_code=400, detail="Content must be provided")
     
-    logger.info(f"📄 Processing 1 document for Llama.cpp embeddings")
+    # Handle both single string and list of strings
+    if isinstance(request.content, str):
+        inputs = [request.content]
+        is_batch = False
+    else:
+        inputs = request.content
+        is_batch = True
+        
+    logger.info(f"📄 Processing {len(inputs)} document(s) for Llama.cpp embeddings")
     
     # Get model (from pool if using concurrent instances, otherwise use global)
     def get_embedding_model_and_encode(inputs):
@@ -2024,58 +2032,123 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
         
         return model.encode(inputs)
     
-    # Generate embedding using the existing embedding model
-    # Use dedicated embedding threadpool for optimal performance
-    inputs = [request.content]
-    docs_embeddings = await run_in_threadpool_with_executor(
-        embedding_executor,
-        get_embedding_model_and_encode,
-        inputs
-    )
-    
-    # Get the embedding and convert to list
-    if hasattr(docs_embeddings, 'tolist'):
-         embedding = docs_embeddings[0].tolist()
-    else:
-         embedding = docs_embeddings[0]
-    
-    # Ensure embedding is always a proper list[float] for type safety
-    # Handle nested lists by flattening if necessary
-    def flatten_to_float_list(obj):
-        """Recursively flatten nested lists and convert to float list"""
-        if isinstance(obj, (int, float)):
-            return [float(obj)]
-        elif isinstance(obj, list):
-            result = []
-            for item in obj:
-                result.extend(flatten_to_float_list(item))
-            return result
-        else:
-            return [0.0]  # Fallback for unsupported types
-    
-    # Convert embedding to proper list[float] format
-    embedding = flatten_to_float_list(embedding)
-    
-    # Apply normalization if requested (llama.cpp typically normalizes by default)
-    if request.normalize:
-        # Normalize the embedding to unit length
+    # Use dedicated embedding threadpool for optimal CPU utilization
+    # Reuse the same concurrent batch processing logic as normal embeddings
+    if len(inputs) > 10:  # Only track progress/chunk for batches larger than 10 items
+        # Process in smaller chunks to show progress
+        chunk_size = max(1, len(inputs) // 10)  # Process in 10% chunks
+        
+        tasks = []
+        async def process_chunk(chunk, start_idx):
+            result = await run_in_threadpool_with_executor(
+                embedding_executor,
+                get_embedding_model_and_encode,
+                chunk
+            )
+            return start_idx, result
+
+        # Create tasks for concurrent execution
+        for i in range(0, len(inputs), chunk_size):
+            chunk = inputs[i:i + chunk_size]
+            tasks.append(process_chunk(chunk, i))
+        
+        # Execute concurrently
+        results_unsorted = []
+        for task in asyncio.as_completed(tasks):
+            idx, res = await task
+            results_unsorted.append((idx, res))
+            
+        # Sort results by start_idx to ensure matching payload order
+        results_unsorted.sort(key=lambda x: x[0])
+        
+        chunk_results = [r[1] for r in results_unsorted]
+        
+        # Combine all chunks
         import numpy as np
-        embedding_array = np.array(embedding, dtype=np.float64)
-        norm = np.linalg.norm(embedding_array)
-        if norm > 0:
-            embedding_array = embedding_array / norm
-            embedding = embedding_array.tolist()
-            # Ensure the result is always a list[float] after normalization
-            if isinstance(embedding, list):
-                embedding = [float(x) if isinstance(x, (int, float)) else 0.0 for x in embedding]
-            elif isinstance(embedding, (int, float)):
-                embedding = [float(embedding)]
+        
+        processed_chunks = []
+        for chunk in chunk_results:
+            if hasattr(chunk, 'cpu'): # It's a tensor
+                processed_chunks.append(chunk.cpu().numpy())
+            elif isinstance(chunk, list):
+                processed_chunks.append(np.array(chunk))
             else:
-                embedding = [0.0]
+                processed_chunks.append(chunk)
+                
+        docs_embeddings = np.concatenate(processed_chunks, axis=0)
+    else:
+        # For small batches, process normally
+        docs_embeddings = await run_in_threadpool_with_executor(
+            embedding_executor,
+            get_embedding_model_and_encode,
+            inputs
+        )
+    
+    # Convert results similar to original logic
+    # docs_embeddings is likely a numpy array or tensor of shape (N, D)
+    
+    # Helper to clean/convert a single embedding vector
+    def process_vector(vec, normalize=True):
+        if hasattr(vec, 'tolist'):
+            vec_list = vec.tolist()
+        else:
+            vec_list = vec
+            
+        # Ensure flat list of floats
+        def flatten_to_float_list(obj):
+            if isinstance(obj, (int, float)):
+                return [float(obj)]
+            elif isinstance(obj, list):
+                result = []
+                for item in obj:
+                    result.extend(flatten_to_float_list(item))
+                return result
+            else:
+                return [0.0]
+                
+        vec_list = flatten_to_float_list(vec_list)
+        
+        if normalize:
+            import numpy as np
+            arr = np.array(vec_list, dtype=np.float64)
+            norm = np.linalg.norm(arr)
+            if norm > 0:
+                arr = arr / norm
+                vec_list = arr.tolist()
+                
+        # Final type safety check
+        vec_list = [float(x) if isinstance(x, (int, float)) else 0.0 for x in vec_list]
+        return vec_list
+
+    # Process all embeddings
+    if hasattr(docs_embeddings, 'cpu'):
+        docs_embeddings = docs_embeddings.cpu().numpy()
+    elif isinstance(docs_embeddings, list):
+        import numpy as np
+        docs_embeddings = np.array(docs_embeddings)
+
+    # docs_embeddings should be (N, D)
+    final_embeddings = []
+    for i in range(len(inputs)):
+        # Extract the vector for this input (safely handle if docs_embeddings is not indexable as expected)
+        try:
+            vec = docs_embeddings[i]
+        except:
+            # Fallback if something went wrong with batching logic
+            vec = docs_embeddings if len(inputs) == 1 else []
+            
+        processed_vec = process_vector(vec, normalize=request.normalize)
+        final_embeddings.append(processed_vec)
+    
+    # Return single vector if single input (for backward compatibility), list of vectors if batch
+    if not is_batch and len(final_embeddings) == 1:
+        response_embedding = final_embeddings[0]
+    else:
+        response_embedding = final_embeddings
     
     # Format response according to llama.cpp API specification
     response = LlamaCppEmbeddingResponse(
-        embedding=embedding,
+        embedding=response_embedding,
         model=embedding_model_name
     )
     

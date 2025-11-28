@@ -17,6 +17,13 @@ import psutil
 import torch
 import argparse
 import uvicorn
+
+# Enable TensorFloat32 (TF32) for better performance on Ampere+ GPUs
+# This allows float32 matrix multiplications to use tensor cores (lower precision but much faster)
+try:
+    torch.set_float32_matmul_precision('high')
+except Exception as e:
+    pass  # Ignore if not supported or older pytorch version
 import logging
 import multiprocessing
 import subprocess

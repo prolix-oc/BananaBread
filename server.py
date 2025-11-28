@@ -15,8 +15,13 @@ import hashlib
 import sys
 import psutil
 import torch
+import torch._dynamo
 import argparse
 import uvicorn
+
+# Set dynamo cache size limit optimization (avoid recompilation warnings)
+# Prevent "torch._dynamo hit config.cache_size_limit" warnings by increasing the limit
+torch._dynamo.config.cache_size_limit = 64
 
 # Enable TensorFloat32 (TF32) for better performance on Ampere+ GPUs
 # This allows float32 matrix multiplications to use tensor cores (lower precision but much faster)

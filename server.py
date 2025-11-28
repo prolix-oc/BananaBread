@@ -23,7 +23,7 @@ import uvicorn
 # Prevent "torch._dynamo hit config.cache_size_limit" warnings by increasing the limit
 # Increased to 512 to handle state changes in transformer KV caches (e.g. is_initialized flags)
 torch._dynamo.config.cache_size_limit = 512
-
+torch._dynamo.config.capture_scalar_outputs = True
 # Enable TensorFloat32 (TF32) for better performance on Ampere+ GPUs
 # This allows float32 matrix multiplications to use tensor cores (lower precision but much faster)
 try:

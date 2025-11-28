@@ -276,7 +276,7 @@ class QwenRawModel:
         if device_map:
             self.model = AutoModel.from_pretrained(
                 model_name,
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 device_map=device_map,
                 **kwargs
             )
@@ -284,7 +284,7 @@ class QwenRawModel:
         else:
             self.model = AutoModel.from_pretrained(
                 model_name,
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 **kwargs
             )
             if device_arg.lower() != "cpu":

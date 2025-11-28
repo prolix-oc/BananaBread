@@ -845,6 +845,14 @@ def compile_model_if_enabled(model, model_name: str):
         logger.info(f"   Mode: {args.torch_compile_mode}")
         logger.info(f"   Backend: {args.torch_compile_backend}")
         
+        # Configure compilation options
+        compile_options = {}
+        if args.torch_compile_backend == "inductor":
+            # Disable cudagraph trees to prevent thread local storage errors with Flash Attention 2
+            # This fixes AssertionError in torch/_inductor/cudagraph_trees.py
+            compile_options["cudagraph_trees"] = False
+            logger.info(f"   Options: {compile_options}")
+        
         # For SentenceTransformer models, compile the underlying encode method
         if hasattr(model, 'encode'):
             # Check if it's our QwenRawModel wrapper - compilation support for raw HF models
@@ -853,7 +861,8 @@ def compile_model_if_enabled(model, model_name: str):
                 model.model = torch.compile(
                     model.model,
                     mode=args.torch_compile_mode,
-                    backend=args.torch_compile_backend
+                    backend=args.torch_compile_backend,
+                    options=compile_options
                 )
                 logger.info(f"✅ {model_name} compiled successfully")
                 return model
@@ -876,7 +885,8 @@ def compile_model_if_enabled(model, model_name: str):
                         transformer.auto_model = torch.compile(
                             transformer.auto_model,
                             mode=args.torch_compile_mode,
-                            backend=args.torch_compile_backend
+                            backend=args.torch_compile_backend,
+                            options=compile_options
                         )
                         logger.info(f"✅ {model_name} compiled successfully")
                     else:
@@ -891,7 +901,8 @@ def compile_model_if_enabled(model, model_name: str):
             compiled = torch.compile(
                 model,
                 mode=args.torch_compile_mode,
-                backend=args.torch_compile_backend
+                backend=args.torch_compile_backend,
+                options=compile_options
             )
             logger.info(f"✅ {model_name} compiled successfully")
             return compiled

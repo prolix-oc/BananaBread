@@ -4,6 +4,11 @@ import os
 # Reduces VRAM fragmentation and improves memory efficiency
 os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:128'
 
+# Disable PyTorch Inductor Cuda Graph Trees explicitly to prevent thread local storage crashes
+# causing AssertionError in torch/_inductor/cudagraph_trees.py
+# This is required when using Flash Attention 2 with torch.compile
+os.environ['TORCHINDUCTOR_CUDAGRAPH_TREES'] = '0'
+
 import json
 import secrets
 import hashlib
@@ -845,27 +850,6 @@ def compile_model_if_enabled(model, model_name: str):
         logger.info(f"   Mode: {args.torch_compile_mode}")
         logger.info(f"   Backend: {args.torch_compile_backend}")
         
-        # Configure compilation options
-        compile_options = {}
-        if args.torch_compile_backend == "inductor":
-            # Disable cudagraph trees to prevent thread local storage errors with Flash Attention 2
-            # This fixes AssertionError in torch/_inductor/cudagraph_trees.py
-            compile_options["cudagraph_trees"] = False
-            logger.info(f"   Options: {compile_options}")
-        
-        # Prepare arguments for torch.compile
-        # Note: 'mode' and 'options' are mutually exclusive in newer PyTorch versions
-        compile_kwargs = {
-            "backend": args.torch_compile_backend,
-        }
-        
-        if compile_options:
-            compile_kwargs["options"] = compile_options
-            if args.torch_compile_mode != "default":
-                logger.warning(f"⚠️  Custom torch compile mode '{args.torch_compile_mode}' ignored because options were specified (cudagraph_trees=False)")
-        else:
-            compile_kwargs["mode"] = args.torch_compile_mode
-        
         # For SentenceTransformer models, compile the underlying encode method
         if hasattr(model, 'encode'):
             # Check if it's our QwenRawModel wrapper - compilation support for raw HF models
@@ -873,7 +857,8 @@ def compile_model_if_enabled(model, model_name: str):
                 logger.info(f"   Compiling underlying HF model for QwenRawModel...")
                 model.model = torch.compile(
                     model.model,
-                    **compile_kwargs
+                    mode=args.torch_compile_mode,
+                    backend=args.torch_compile_backend
                 )
                 logger.info(f"✅ {model_name} compiled successfully")
                 return model
@@ -895,7 +880,8 @@ def compile_model_if_enabled(model, model_name: str):
                         logger.info(f"   Compiling underlying transformer model...")
                         transformer.auto_model = torch.compile(
                             transformer.auto_model,
-                            **compile_kwargs
+                            mode=args.torch_compile_mode,
+                            backend=args.torch_compile_backend
                         )
                         logger.info(f"✅ {model_name} compiled successfully")
                     else:
@@ -909,7 +895,8 @@ def compile_model_if_enabled(model, model_name: str):
             # Direct compilation
             compiled = torch.compile(
                 model,
-                **compile_kwargs
+                mode=args.torch_compile_mode,
+                backend=args.torch_compile_backend
             )
             logger.info(f"✅ {model_name} compiled successfully")
             return compiled

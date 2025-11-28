@@ -1029,7 +1029,6 @@ use_shared_qwen_pool = (
     args.embedding_model == 'qwen' and
     reranking_model_choice == 'qwen' and
     args.embedding_device == args.rerank_device and
-    not args.qwen_flash_attention and
     (using_gpu_embedding or using_gpu_rerank) and
     (args.num_concurrent_embedding > 1 or args.num_concurrent_rerank > 1)
 )
@@ -1135,7 +1134,6 @@ if reranking_model_choice == 'qwen':
         
     elif (args.embedding_model == 'qwen' and 
           args.embedding_device == args.rerank_device and
-          not args.qwen_flash_attention and
           args.num_concurrent_embedding == 1 and
           args.num_concurrent_rerank == 1):
         # Traditional single model sharing (only when both are single instance)

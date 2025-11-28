@@ -27,7 +27,7 @@ torch._dynamo.config.capture_scalar_outputs = True
 # Enable TensorFloat32 (TF32) for better performance on Ampere+ GPUs
 # This allows float32 matrix multiplications to use tensor cores (lower precision but much faster)
 try:
-    torch.set_float32_matmul_precision('high')
+    torch.backends.cudnn.conv.fp32_precision = 'tf32'
 except Exception as e:
     pass  # Ignore if not supported or older pytorch version
 import logging

@@ -12,8 +12,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, Union, List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from sentence_transformers.quantization import quantize_embeddings
 
 from bananabread.config import (
@@ -179,17 +180,37 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for all origins with credentials support
-# Using allow_origin_regex to match any origin while supporting Authorization headers
-# This is necessary because allow_origins=["*"] with allow_credentials=True is not allowed
+# Enable CORS for all origins
+# We allow all origins since BananaBread is typically accessed from various frontends
+# Authorization is handled via Bearer token in headers, not cookies
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r".*",  # Match any origin
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["*"],
+    allow_credentials=False,  # Using Authorization header, not cookies
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+# Explicit OPTIONS handler for all routes - ensures CORS preflight works even behind reverse proxies
+# This catches any OPTIONS request and returns proper CORS headers
+@app.options("/{rest_of_path:path}")
+async def preflight_handler(request: Request, rest_of_path: str):
+    """
+    Handle CORS preflight requests explicitly.
+    This ensures OPTIONS requests work correctly even behind reverse proxies
+    that might not forward them properly to the CORSMiddleware.
+    """
+    origin = request.headers.get("origin", "*")
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": origin if origin != "*" else "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD",
+            "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "*"),
+            "Access-Control-Max-Age": "86400",  # Cache preflight for 24 hours
+        }
+    )
 
 # Store configuration in app state
 app.state.cpu_count = CPU_COUNT

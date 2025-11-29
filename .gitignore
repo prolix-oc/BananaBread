@@ -5,3 +5,4 @@ api_keys.json
 bananabread_emb.egg-info/
 uv.lock
 
+server_old.py

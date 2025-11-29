@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bananabread-emb"
-version = "0.5.2"
+version = "0.6.0"
 description = "A way to slip MixedBread's reranker and embedder into a lot of places it doesn't belong."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "Prolix Creates", email = "info@prolix.dev"},
@@ -21,11 +21,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Framework :: FastAPI",
@@ -38,10 +34,13 @@ dependencies = [
     "pydantic>=2.0.0",
     
     # Machine learning and AI
-    "torch>=2.0.0",
+    "torch>=2.9.0,<2.10.0",
     "transformers>=4.35.0",
     "sentence-transformers>=2.2.0",
     "mxbai-rerank>=0.1.0",
+    "flash-attn @ https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.3+cu130torch2.9.1cxx11abiTRUE-cp313-cp313-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.13'",
+    "flash-attn @ https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.3+cu130torch2.9.1cxx11abiTRUE-cp312-cp312-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.12'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.5.4/flash_attn-2.6.3+cu130torch2.9-cp312-cp312-linux_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'",
     
     # System and utilities
     "psutil>=5.9.0",
@@ -58,16 +57,6 @@ dev = [
     "mypy>=1.0.0",
 ]
 
-# GPU acceleration (Linux only, requires CUDA 11.8+ or CUDA 12.1+)
-gpu = [
-    "flash-attn>=2.3.0",
-]
-
-# All optional dependencies
-all = [
-    "bananabread-emb[dev,gpu]",
-]
-
 [project.urls]
 Homepage = "https://github.com/prolix-oc/bananabread-emb"
 Documentation = "https://github.com/prolix-oc/bananabread-emb#readme"
@@ -75,21 +64,25 @@ Repository = "https://github.com/prolix-oc/bananabread-emb.git"
 Issues = "https://github.com/prolix-oc/bananabread-emb/issues"
 
 [project.scripts]
-bananabread-emb = "server:main"
+bananabread-emb = "bananabread.main:main"
 
 [tool.setuptools]
-py-modules = ["server"]
+packages = ["bananabread"]
 
 [tool.black]
 line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+target-version = ['py313']
 
 [tool.isort]
 profile = "black"
 line_length = 100
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[tool.uv]
+extra-index-url = ["https://download.pytorch.org/whl/cu130"]
+index-strategy = "unsafe-best-match"

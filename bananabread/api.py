@@ -315,6 +315,9 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         processed_chunks = []
         for chunk in all_embeddings:
             if hasattr(chunk, 'cpu'):
+                # Convert BFloat16 to Float32 before numpy conversion (numpy doesn't support bf16)
+                if chunk.dtype == torch.bfloat16:
+                    chunk = chunk.to(torch.float32)
                 processed_chunks.append(chunk.cpu().numpy())
             elif isinstance(chunk, list):
                 processed_chunks.append(np.array(chunk))
@@ -343,8 +346,11 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         logger.debug(f"Applied {args.quant} quantization to embeddings")
     
     if hasattr(docs_embeddings, 'cpu'):
+        # Convert BFloat16 to Float32 before numpy conversion (numpy doesn't support bf16)
+        if docs_embeddings.dtype == torch.bfloat16:
+            docs_embeddings = docs_embeddings.to(torch.float32)
         docs_embeddings = docs_embeddings.cpu()
-    
+
     # Encoding
     if request.encoding_format == "base64":
         if not isinstance(docs_embeddings, np.ndarray):
@@ -449,7 +455,11 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest):
         get_embedding_model_and_encode,
         inputs
     )
-    
+
+    # Convert BFloat16 to Float32 before tolist() (numpy/tolist doesn't support bf16)
+    if hasattr(docs_embeddings, 'dtype') and docs_embeddings.dtype == torch.bfloat16:
+        docs_embeddings = docs_embeddings.to(torch.float32)
+
     if len(inputs) == 1:
         if hasattr(docs_embeddings, 'tolist'):
             embedding = docs_embeddings[0].tolist()

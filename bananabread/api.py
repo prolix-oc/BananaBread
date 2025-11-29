@@ -13,6 +13,7 @@ from typing import Dict, Any, Union, List
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from sentence_transformers.quantization import quantize_embeddings
 
 from bananabread.config import (
@@ -176,6 +177,14 @@ app = FastAPI(
     description="A way to slip MixedBread's reranker and embedder into a lot of places it doesn't belong.",
     version="0.5.2",
     lifespan=lifespan
+)
+
+# Enable CORS for all origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Store configuration in app state

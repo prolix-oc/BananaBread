@@ -4,5 +4,8 @@ __pycache__/
 api_keys.json
 bananabread_emb.egg-info/
 uv.lock
-
+.DS_Store
 server_old.py
+*.md
+!README.md
+!README-BananaBread.md

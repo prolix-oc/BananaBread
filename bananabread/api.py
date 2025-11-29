@@ -179,12 +179,16 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for all origins
+# Enable CORS for all origins with credentials support
+# Using allow_origin_regex to match any origin while supporting Authorization headers
+# This is necessary because allow_origins=["*"] with allow_credentials=True is not allowed
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r".*",  # Match any origin
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Store configuration in app state

@@ -39,6 +39,7 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     "mxbai-rerank>=0.1.0",
     "flash-attn",
+    "nvidia-cublas-cu12!=12.8.4.1; sys_platform == 'linux'",
     
     # System and utilities
     "psutil>=5.9.0",

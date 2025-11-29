@@ -38,9 +38,7 @@ dependencies = [
     "transformers>=4.35.0",
     "sentence-transformers>=2.2.0",
     "mxbai-rerank>=0.1.0",
-    "flash-attn @ https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.3+cu130torch2.9.1cxx11abiTRUE-cp313-cp313-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.13'",
-    "flash-attn @ https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.3+cu130torch2.9.1cxx11abiTRUE-cp312-cp312-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.12'",
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.5.4/flash_attn-2.6.3+cu130torch2.9-cp312-cp312-linux_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'",
+    "flash-attn",
     
     # System and utilities
     "psutil>=5.9.0",
@@ -86,3 +84,10 @@ disallow_untyped_defs = true
 [tool.uv]
 extra-index-url = ["https://download.pytorch.org/whl/cu130"]
 index-strategy = "unsafe-best-match"
+
+[tool.uv.sources]
+flash-attn = [
+    { url = "https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.3+cu130torch2.9.1cxx11abiTRUE-cp313-cp313-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.13'" },
+    { url = "https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.3+cu130torch2.9.1cxx11abiTRUE-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.12'" },
+    { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.5.4/flash_attn-2.8.3+cu130torch2.9-cp312-cp312-linux_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'" },
+]

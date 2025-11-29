@@ -10,6 +10,7 @@ import torch
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, Union, List
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Header, Depends
 from sentence_transformers.quantization import quantize_embeddings
@@ -25,15 +26,15 @@ from bananabread.schemas import (
 )
 from bananabread.cache import (
     LimitedCache, CUDACacheManager,
-    get_rerank_cache_key, get_embedding_cache_key
+    get_rerank_cache_key, get_embedding_cache_key,
+    get_cache_size
 )
 from bananabread.utils import (
     CustomProgressTracker, 
     log_embedding_result,
     run_in_threadpool_with_executor,
     get_process_memory_usage,
-    get_model_memory_usage,
-    get_cache_size
+    get_model_memory_usage
 )
 import bananabread.models.manager as models_manager
 from bananabread.models.manager import ModelPool
@@ -148,17 +149,33 @@ def get_api_key(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return api_key
 
-# ----- Model Initialization -----
+# ----- Lifespan Manager -----
 
-# Initialize models
-models_manager.initialize_models()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan manager to handle startup and shutdown events.
+    This ensures models are loaded *after* the app structure is ready, 
+    and resources are cleaned up gracefully on shutdown.
+    """
+    logger.info("🟢 Lifespan: Initializing models...")
+    # Initialize models
+    models_manager.initialize_models()
+    logger.info("🟢 Lifespan: Models initialized")
+    
+    yield
+    
+    logger.info("🔴 Lifespan: Shutting down...")
+    cleanup_resources()
+    logger.info("🔴 Lifespan: Shutdown complete")
 
 # ----- FastAPI Application -----
 
 app = FastAPI(
     title="BananaBread-Emb",
     description="A way to slip MixedBread's reranker and embedder into a lot of places it doesn't belong.",
-    version="0.5.2"
+    version="0.5.2",
+    lifespan=lifespan
 )
 
 # Store configuration in app state

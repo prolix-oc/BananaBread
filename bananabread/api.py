@@ -128,18 +128,27 @@ def load_api_keys():
     if os.path.exists(API_KEYS_FILE):
         with open(API_KEYS_FILE, "r") as f:
             api_keys = json.load(f)
+        logger.info(f"🔑 Loaded API keys from {API_KEYS_FILE}")
     else:
-        api_keys = {}
+        # Create default api_keys.json with a 'user' key on first startup
+        new_key = secrets.token_hex(16)
+        api_keys = {"user": new_key}
+        with open(API_KEYS_FILE, "w") as f:
+            json.dump(api_keys, f, indent=4)
+        logger.info(f"🔑 Created {API_KEYS_FILE} with default 'user' API key: {new_key}")
+        return
+
     updated = False
     # For each user in the file, if no API key is provided, generate one.
     for user, key in api_keys.items():
         if not key:
             new_key = secrets.token_hex(16)
             api_keys[user] = new_key
+            logger.info(f"🔑 Generated new API key for user '{user}'")
             updated = True
     if updated:
         with open(API_KEYS_FILE, "w") as f:
-            json.dump(api_keys, f)
+            json.dump(api_keys, f, indent=4)
 
 load_api_keys()
 

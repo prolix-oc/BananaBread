@@ -129,23 +129,7 @@ os.environ['TORCHINDUCTOR_CUDAGRAPH_TREES'] = '0'
 
 CONFIG_FILE = "config.json"
 
-def load_config() -> Dict[str, Any]:
-    """Load configuration from JSON file if exists"""
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-                logger.info(f"📄 Loaded configuration from {CONFIG_FILE}")
-                return config
-        except Exception as e:
-            logger.warning(f"⚠️  Failed to load config file: {e}")
-    return {}
-
-CPU_INFO = get_cpu_info()
-AVAILABLE_SOCKETS = get_available_cores()
-TOTAL_PHYSICAL_CORES = multiprocessing.cpu_count()
-
-# Define defaults for arguments
+# Define defaults for arguments (moved here so it's available for config creation)
 DEFAULTS = {
     "cache_limit": 1024,
     "embedding_device": "cpu",
@@ -178,6 +162,37 @@ DEFAULTS = {
     "cuda_cache_ttl_enabled": False,
     "log_embeddings": False
 }
+
+def create_default_config() -> Dict[str, Any]:
+    """Create default config.json file on first startup"""
+    # Only include non-None defaults that users would want to customize
+    config_defaults = {k: v for k, v in DEFAULTS.items() if v is not None}
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config_defaults, f, indent=4)
+        logger.info(f"📝 Created default configuration file: {CONFIG_FILE}")
+        return config_defaults
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to create config file: {e}")
+        return {}
+
+def load_config() -> Dict[str, Any]:
+    """Load configuration from JSON file, creating default if it doesn't exist"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                logger.info(f"📄 Loaded configuration from {CONFIG_FILE}")
+                return config
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to load config file: {e}")
+            return {}
+    else:
+        return create_default_config()
+
+CPU_INFO = get_cpu_info()
+AVAILABLE_SOCKETS = get_available_cores()
+TOTAL_PHYSICAL_CORES = multiprocessing.cpu_count()
 
 def parse_args():
     parser = argparse.ArgumentParser(

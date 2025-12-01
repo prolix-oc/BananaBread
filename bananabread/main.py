@@ -66,7 +66,8 @@ def main():
         host="0.0.0.0",
         port=8008,
         reload=False,
-        log_config=None  # Disable uvicorn's default logging
+        log_config=None,  # Disable uvicorn's default logging
+        timeout_keep_alive=300,  # 5 minutes - prevents connection drops during long batch operations
     )
     
     # Create custom server

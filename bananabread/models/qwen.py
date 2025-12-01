@@ -5,6 +5,17 @@ from typing import List, Optional
 
 from bananabread.config import logger
 
+# Check if Flash Attention 2 is available
+def _check_flash_attention_available() -> bool:
+    """Check if Flash Attention 2 is installed and usable."""
+    try:
+        import flash_attn
+        return True
+    except ImportError:
+        return False
+
+FLASH_ATTENTION_AVAILABLE = _check_flash_attention_available()
+
 # ----- Qwen Raw Model Class -----
 
 class QwenRawModel:
@@ -18,16 +29,32 @@ class QwenRawModel:
         """
         self.model_name = model_name
         self.device_arg = device_arg
-        
+
         logger.info(f"Loading Qwen raw model: {model_name}")
-        
+
         # Initialize tokenizer with left padding as required for last token pooling
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
-        
+
         # Determine device settings
         kwargs = {}
+
+        # Handle Flash Attention 2 configuration
         if use_flash_attention:
-            kwargs["attn_implementation"] = "flash_attention_2"
+            if FLASH_ATTENTION_AVAILABLE:
+                kwargs["attn_implementation"] = "flash_attention_2"
+                logger.info("Flash Attention 2 enabled for Qwen model")
+            else:
+                logger.warning(
+                    "Flash Attention 2 requested but not installed. "
+                    "Falling back to default attention implementation. "
+                    "To enable Flash Attention 2, install the extras: uv pip install bananabread-emb[flash-attn]"
+                )
+        elif device_arg.lower() != "cpu" and not FLASH_ATTENTION_AVAILABLE:
+            # User is on GPU but doesn't have FA2 - provide helpful info
+            logger.info(
+                "Flash Attention 2 is not installed. For improved GPU performance with Qwen models, "
+                "consider installing: uv pip install bananabread-emb[flash-attn]"
+            )
             
         # Handle device mapping logic
         if device_arg.lower() == "cpu":

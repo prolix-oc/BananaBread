@@ -63,6 +63,15 @@ def setup_pretty_logging(level=logging.INFO):
 setup_pretty_logging()
 logger = logging.getLogger("BananaBread-Emb")
 
+# Warn about Python pre-release versions (known Pydantic compatibility issues)
+if sys.version_info.releaselevel != 'final':
+    logger.warning(
+        f"You are running Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} "
+        f"({sys.version_info.releaselevel}). Pre-release Python versions may cause errors with Pydantic "
+        f"(e.g., '_eval_type() got an unexpected keyword argument'). "
+        f"Please upgrade to the stable release of Python {sys.version_info.major}.{sys.version_info.minor}."
+    )
+
 # ----- CPU and System Information -----
 
 def get_cpu_info():

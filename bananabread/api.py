@@ -516,7 +516,6 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest):
     )
 
 @app.post("/embedding")
-@app.post("/v1/embeddings/llamacpp")
 async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
     try:
         if not request.content:

@@ -13,6 +13,17 @@ def _check_flash_attention_available() -> bool:
         return True
     except ImportError:
         return False
+    except Exception as e:
+        import sys
+        if sys.platform == 'win32':
+            logger.warning(
+                f"Flash Attention 2 failed to load on Windows: {e}. "
+                "Ensure you installed using 'uv' (not pip) so the precompiled wheel is used, "
+                "or install the wheel manually. See README for details."
+            )
+        else:
+            logger.warning(f"Flash Attention 2 failed to load: {e}")
+        return False
 
 FLASH_ATTENTION_AVAILABLE = _check_flash_attention_available()
 
@@ -44,11 +55,21 @@ class QwenRawModel:
                 kwargs["attn_implementation"] = "flash_attention_2"
                 logger.info("Flash Attention 2 enabled for Qwen model")
             else:
-                logger.warning(
-                    "Flash Attention 2 requested but not installed. "
-                    "Falling back to default attention implementation. "
-                    "To enable Flash Attention 2, install the extras: uv pip install bananabread-emb[flash-attn]"
-                )
+                import sys
+                if sys.platform == 'win32':
+                    logger.warning(
+                        "Flash Attention 2 requested but not installed. "
+                        "Falling back to default attention implementation. "
+                        "On Windows, you MUST use 'uv' to install (not pip) so precompiled wheels are used: "
+                        "uv pip install bananabread-emb[flash-attn] -- "
+                        "Or install the wheel manually (see README)."
+                    )
+                else:
+                    logger.warning(
+                        "Flash Attention 2 requested but not installed. "
+                        "Falling back to default attention implementation. "
+                        "To enable Flash Attention 2, install the extras: uv pip install bananabread-emb[flash-attn]"
+                    )
         elif device_arg.lower() != "cpu" and not FLASH_ATTENTION_AVAILABLE:
             # User is on GPU but doesn't have FA2 - provide helpful info
             logger.info(

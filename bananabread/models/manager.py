@@ -6,7 +6,7 @@ from sentence_transformers import SentenceTransformer
 from mxbai_rerank import MxbaiRerankV2
 
 from bananabread.config import logger, args
-from bananabread.models.qwen import QwenRawModel
+from bananabread.models.qwen import QwenRawModel, load_qwen_model
 
 # Global model references
 embedding_model = None
@@ -239,11 +239,15 @@ def load_embedding_model_instance():
     """Load a single embedding model instance based on args"""
     if args.embedding_model == 'qwen':
         qwen_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
-        # Use the raw transformer implementation for Qwen
-        model = QwenRawModel(
+        model = load_qwen_model(
             qwen_model_name,
+            backend=args.qwen_backend,
             device_arg=args.embedding_device,
-            use_flash_attention=args.qwen_flash_attention
+            use_flash_attention=args.qwen_flash_attention,
+            compute_dtype=args.qwen_compute_dtype,
+            onnx_model_path=args.qwen_onnx_model_path,
+            onnx_provider=args.qwen_onnx_provider,
+            max_length=args.qwen_max_length,
         )
     else:
         # MixedBread model
@@ -289,6 +293,8 @@ def initialize_models():
     # ----- Embedding Model Init -----
     logger.info(f"Loading embedding model on device: {args.embedding_device}")
     logger.info(f"Using embedding model: {args.embedding_model}")
+    if args.embedding_model == 'qwen':
+        logger.info(f"Using Qwen backend: {args.qwen_backend}")
     
     shared_qwen_pool = None
     
@@ -325,10 +331,15 @@ def initialize_models():
         # Single instance
         if args.embedding_model == 'qwen':
             embedding_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
-            embedding_model = QwenRawModel(
+            embedding_model = load_qwen_model(
                 embedding_model_name,
+                backend=args.qwen_backend,
                 device_arg=args.embedding_device,
-                use_flash_attention=args.qwen_flash_attention
+                use_flash_attention=args.qwen_flash_attention,
+                compute_dtype=args.qwen_compute_dtype,
+                onnx_model_path=args.qwen_onnx_model_path,
+                onnx_provider=args.qwen_onnx_provider,
+                max_length=args.qwen_max_length,
             )
         else:
             embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
@@ -365,10 +376,15 @@ def initialize_models():
             qwen_reranker_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
             if using_gpu_rerank and args.num_concurrent_rerank > 1:
                 def load_qwen_reranker():
-                    return QwenRawModel(
+                    return load_qwen_model(
                         qwen_reranker_model_name,
+                        backend=args.qwen_backend,
                         device_arg=args.rerank_device,
-                        use_flash_attention=args.qwen_flash_attention
+                        use_flash_attention=args.qwen_flash_attention,
+                        compute_dtype=args.qwen_compute_dtype,
+                        onnx_model_path=args.qwen_onnx_model_path,
+                        onnx_provider=args.qwen_onnx_provider,
+                        max_length=args.qwen_max_length,
                     )
                 rerank_model_pool = ModelPool(
                     args.num_concurrent_rerank,
@@ -377,10 +393,15 @@ def initialize_models():
                 )
                 rerank_model = None
             else:
-                rerank_model = QwenRawModel(
+                rerank_model = load_qwen_model(
                     qwen_reranker_model_name,
+                    backend=args.qwen_backend,
                     device_arg=args.rerank_device,
-                    use_flash_attention=args.qwen_flash_attention
+                    use_flash_attention=args.qwen_flash_attention,
+                    compute_dtype=args.qwen_compute_dtype,
+                    onnx_model_path=args.qwen_onnx_model_path,
+                    onnx_provider=args.qwen_onnx_provider,
+                    max_length=args.qwen_max_length,
                 )
                 rerank_model_pool = None
     else:

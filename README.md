@@ -106,9 +106,17 @@ uv run bananabread-emb --embedding-model qwen
 # Pick a larger Qwen model (0.6B, 4B, or 8B)
 uv run bananabread-emb --embedding-model qwen --qwen-size 4B
 
+# Load Qwen with CUDA 8-bit weight quantization
+uv run --extra cuda-quant bananabread-emb --embedding-model qwen --qwen-size 4B --embedding-device cuda --qwen-backend torch-bnb-8bit
+
+# Run a pre-exported INT8 ONNX Qwen model on CPU
+uv run --extra onnx bananabread-emb --embedding-model qwen --qwen-backend onnx-int8 --qwen-onnx-model-path ./models/qwen3-embedding-4b-int8-onnx
+
 # Mix and match: Qwen embeddings, MixedBread reranking
 uv run bananabread-emb --embedding-model qwen --reranking-model mixedbread
 ```
+
+`qwen_backend` controls how the model itself runs. `quant` controls the returned embedding vectors after inference. For example, `qwen_backend=onnx-int8` uses an INT8 ONNX model, while `quant=int8` returns scalar-int8 embedding vectors to clients.
 
 ### Config file
 
@@ -122,6 +130,11 @@ All available options (grouped by purpose):
 | `embedding_model` | `"mixedbread"` | `"mixedbread"` or `"qwen"` |
 | `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, or `null` (auto: matches embedding model) |
 | `qwen_size` | `"0.6B"` | Qwen model size: `"0.6B"`, `"4B"`, or `"8B"` |
+| `qwen_backend` | `"torch"` | Qwen runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, or `"onnx-int8"` |
+| `qwen_compute_dtype` | `"bfloat16"` | Compute dtype for torch Qwen backends: `"bfloat16"`, `"float16"`, or `"float32"` |
+| `qwen_onnx_model_path` | `null` | Local `.onnx` file or directory for `qwen_backend="onnx-int8"` |
+| `qwen_onnx_provider` | `"CPUExecutionProvider"` | ONNX Runtime execution provider |
+| `qwen_max_length` | `8192` | Maximum token length for Qwen embedding inputs |
 | `qwen_flash_attention` | `false` | Enable Flash Attention 2 for Qwen models |
 | **Device placement** | | |
 | `embedding_device` | `"cpu"` | `"cpu"`, `"cuda"`, `"cuda:0"`, etc. |
@@ -213,6 +226,30 @@ Once installed, enable it:
 ```bash
 uv run bananabread-emb --embedding-model qwen --qwen-flash-attention --embedding-device cuda
 ```
+
+### Qwen CUDA quantization
+
+Qwen supports optional bitsandbytes weight quantization on CUDA. This reduces model VRAM usage; it is separate from `quant`, which quantizes the returned embedding vectors.
+
+```bash
+# Safer VRAM reduction
+uv run --extra cuda-quant bananabread-emb --embedding-model qwen --qwen-size 4B --embedding-device cuda --qwen-backend torch-bnb-8bit
+
+# Lower VRAM, more quality-sensitive
+uv run --extra cuda-quant bananabread-emb --embedding-model qwen --qwen-size 4B --embedding-device cuda --qwen-backend torch-bnb-4bit
+```
+
+For quantized CUDA backends, keep `num_concurrent_embedding` and `num_concurrent_rerank` at `1` unless you have enough VRAM for multiple model copies.
+
+### Qwen ONNX INT8
+
+For CPU deployments, export and quantize Qwen to ONNX ahead of time, then point BananaBread at the local model file or directory:
+
+```bash
+uv run --extra onnx bananabread-emb --embedding-model qwen --qwen-size 4B --qwen-backend onnx-int8 --qwen-onnx-model-path ./models/qwen3-embedding-4b-int8-onnx
+```
+
+The ONNX backend runs the model through ONNX Runtime, then applies the same last-token pooling and normalization as the torch backend.
 
 ---
 

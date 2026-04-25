@@ -156,6 +156,11 @@ DEFAULTS = {
     "warmup_samples": 3,
     "embedding_model": "mixedbread",
     "qwen_size": "0.6B",
+    "qwen_backend": "torch",
+    "qwen_compute_dtype": "bfloat16",
+    "qwen_onnx_model_path": None,
+    "qwen_onnx_provider": "CPUExecutionProvider",
+    "qwen_max_length": 8192,
     "seed": 65,
     # None defaults for optional overrides
     "use_cores": None,
@@ -293,6 +298,16 @@ def parse_args():
                        help=f"Embedding model to use (default: {DEFAULTS['embedding_model']})")
     parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default=DEFAULTS["qwen_size"],
                        help=f"Qwen model size to use when --embedding-model=qwen (default: {DEFAULTS['qwen_size']})")
+    parser.add_argument("--qwen-backend", type=str, choices=['torch', 'torch-bnb-8bit', 'torch-bnb-4bit', 'onnx-int8'], default=DEFAULTS["qwen_backend"],
+                       help=f"Qwen runtime backend (default: {DEFAULTS['qwen_backend']})")
+    parser.add_argument("--qwen-compute-dtype", type=str, choices=['bfloat16', 'float16', 'float32'], default=DEFAULTS["qwen_compute_dtype"],
+                       help=f"Compute dtype for torch Qwen backends (default: {DEFAULTS['qwen_compute_dtype']})")
+    parser.add_argument("--qwen-onnx-model-path", type=str, default=DEFAULTS.get("qwen_onnx_model_path"),
+                       help="Local ONNX model directory or .onnx file for --qwen-backend=onnx-int8")
+    parser.add_argument("--qwen-onnx-provider", type=str, default=DEFAULTS["qwen_onnx_provider"],
+                       help=f"ONNX Runtime execution provider (default: {DEFAULTS['qwen_onnx_provider']})")
+    parser.add_argument("--qwen-max-length", type=int, default=DEFAULTS["qwen_max_length"],
+                       help=f"Maximum token length for Qwen embedding inputs (default: {DEFAULTS['qwen_max_length']})")
     parser.add_argument("--qwen-flash-attention", action='store_true', default=DEFAULTS.get("qwen_flash_attention"),
                        help="Enable flash_attention_2 for Qwen models (requires compatible GPU)")
 

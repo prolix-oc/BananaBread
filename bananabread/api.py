@@ -440,23 +440,24 @@ async def embedding_endpoint(request: EmbeddingRequest, auth: dict = Depends(get
             inputs
         )
     
+    if hasattr(docs_embeddings, 'cpu'):
+        # Convert BFloat16 to Float32 before numpy conversion / quantization
+        # (numpy and sentence_transformers quantize_embeddings don't support bf16)
+        if docs_embeddings.dtype == torch.bfloat16:
+            docs_embeddings = docs_embeddings.to(torch.float32)
+        docs_embeddings = docs_embeddings.cpu()
+
     # Quantization
     if args.quant != 'standard':
         def quantize_embeddings_wrapper(embeddings):
             return quantize_embeddings(embeddings, precision=args.quant)
-        
+
         docs_embeddings = await run_in_threadpool_with_executor(
             embedding_executor,
             quantize_embeddings_wrapper,
             docs_embeddings
         )
         logger.debug(f"Applied {args.quant} quantization to embeddings")
-    
-    if hasattr(docs_embeddings, 'cpu'):
-        # Convert BFloat16 to Float32 before numpy conversion (numpy doesn't support bf16)
-        if docs_embeddings.dtype == torch.bfloat16:
-            docs_embeddings = docs_embeddings.to(torch.float32)
-        docs_embeddings = docs_embeddings.cpu()
 
     # Encoding
     if request.encoding_format == "base64":

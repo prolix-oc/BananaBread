@@ -54,27 +54,23 @@ ADMIN_PANEL_HTML = """<!doctype html>
     .meta { color: var(--muted); font-size: .82rem; margin-top: 6px; }
     code { color: var(--gold); }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0 0; padding: 14px; border-radius: 14px; background: #0d0d0a; color: var(--green); }
+    .header-bar { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
     @media (max-width: 820px) { .grid, .row { grid-template-columns: 1fr; } main { width: min(100% - 22px, 1180px); padding: 24px 0; } }
   </style>
 </head>
 <body>
   <main>
     <header>
-      <h1>Tenant Control Room</h1>
-      <p>Configure BananaBread management access, default token limits, tiers, user API keys, and cache isolation. Every action below requires the management key in <code>api_keys.json</code>.</p>
+      <div class="header-bar">
+        <h1>Tenant Control Room</h1>
+        <button class="secondary" id="logoutBtn" style="margin-top:0;">Sign out</button>
+      </div>
+      <p>Configure BananaBread management access, default token limits, tiers, user API keys, and cache isolation.</p>
     </header>
 
-    <div id="status" class="status">Enter the management key and load configuration.</div>
+    <div id="status" class="status">Loading configuration...</div>
 
     <section class="grid">
-      <div class="card wide">
-        <h2>Access</h2>
-        <label for="managementKey">Current management key</label>
-        <input id="managementKey" type="password" autocomplete="current-password" placeholder="Bearer token used for management calls">
-        <button id="loadConfig">Load configuration</button>
-        <button class="secondary" id="forgetKey">Forget saved key</button>
-      </div>
-
       <div class="card">
         <h2>Global Defaults</h2>
         <div class="row">
@@ -123,9 +119,9 @@ ADMIN_PANEL_HTML = """<!doctype html>
         <pre id="createdKey" hidden></pre>
       </div>
 
-      <div class="card">
+      <div class="card wide">
         <h2>Users</h2>
-        <div id="users" class="users"><p>No configuration loaded.</p></div>
+        <div id="users" class="users"><p>Loading...</p></div>
       </div>
     </section>
   </main>
@@ -134,8 +130,6 @@ ADMIN_PANEL_HTML = """<!doctype html>
     const $ = (id) => document.getElementById(id);
     const status = $('status');
     let currentConfig = null;
-
-    $('managementKey').value = localStorage.getItem('bananabreadManagementKey') || '';
 
     function setStatus(message, ok = true) {
       status.textContent = message;
@@ -146,15 +140,20 @@ ADMIN_PANEL_HTML = """<!doctype html>
       return value === '' ? null : Number(value);
     }
 
-    function authHeaders() {
-      const key = $('managementKey').value.trim();
-      if (!key) throw new Error('Management key is required.');
-      localStorage.setItem('bananabreadManagementKey', key);
-      return { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' };
+    function apiHeaders() {
+      return { 'Content-Type': 'application/json' };
     }
 
     async function api(path, options = {}) {
-      const response = await fetch(path, { ...options, headers: { ...authHeaders(), ...(options.headers || {}) } });
+      const response = await fetch(path, {
+        ...options,
+        credentials: 'same-origin',
+        headers: { ...apiHeaders(), ...(options.headers || {}) }
+      });
+      if (response.status === 401 || response.status === 403) {
+        window.location.href = '/management/login';
+        throw new Error('Session expired. Redirecting to login...');
+      }
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail || body));
       return body;
@@ -198,8 +197,9 @@ ADMIN_PANEL_HTML = """<!doctype html>
       setStatus('Configuration loaded.');
     }
 
-    $('loadConfig').onclick = () => loadConfig().catch((error) => setStatus(error.message, false));
-    $('forgetKey').onclick = () => { localStorage.removeItem('bananabreadManagementKey'); $('managementKey').value = ''; setStatus('Saved management key removed.'); };
+    $('logoutBtn').onclick = () => {
+      window.location.href = '/management/logout';
+    };
 
     $('saveConfig').onclick = async () => {
       try {
@@ -207,7 +207,7 @@ ADMIN_PANEL_HTML = """<!doctype html>
         const newKey = $('newManagementKey').value.trim();
         if (newKey) payload.management_key = newKey;
         const config = await api('/v1/management/config', { method: 'PATCH', body: JSON.stringify(payload) });
-        if (newKey) { $('managementKey').value = newKey; localStorage.setItem('bananabreadManagementKey', newKey); $('newManagementKey').value = ''; }
+        if (newKey) $('newManagementKey').value = '';
         render(config);
         setStatus('Global settings saved.');
       } catch (error) { setStatus(error.message, false); }
@@ -254,6 +254,103 @@ ADMIN_PANEL_HTML = """<!doctype html>
         $('userWeekly').value = '';
         await loadConfig();
       } catch (error) { setStatus(error.message, false); }
+    };
+
+    loadConfig().catch((error) => setStatus(error.message, false));
+  </script>
+</body>
+</html>"""
+
+LOGIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BananaBread Management - Login</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #10100d;
+      --panel: #191812;
+      --panel-2: #232116;
+      --ink: #f7edcf;
+      --muted: #b9ad8b;
+      --line: #3b3522;
+      --gold: #f0c75e;
+      --green: #85d58a;
+      --red: #ff7f66;
+      --shadow: 0 22px 70px rgba(0, 0, 0, .38);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 18% 12%, rgba(240, 199, 94, .22), transparent 28rem),
+        radial-gradient(circle at 88% 4%, rgba(133, 213, 138, .12), transparent 24rem),
+        linear-gradient(135deg, #0d0d0a, var(--bg) 48%, #17130b);
+    }
+    .login-box {
+      background: linear-gradient(180deg, rgba(35, 33, 22, .94), rgba(25, 24, 18, .94));
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 36px;
+      width: min(420px, calc(100% - 32px));
+      box-shadow: var(--shadow);
+    }
+    h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 2rem; margin: 0 0 8px; letter-spacing: -.04em; }
+    p { color: var(--muted); margin: 0 0 24px; line-height: 1.5; }
+    label { display: block; color: var(--muted); font-size: .78rem; margin: 16px 0 7px; text-transform: uppercase; letter-spacing: .08em; }
+    input {
+      width: 100%; border: 1px solid var(--line); border-radius: 14px; background: #0d0d0a; color: var(--ink); padding: 12px 13px; font: inherit; outline: none;
+    }
+    input:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(240, 199, 94, .16); }
+    button { width: 100%; border: 0; border-radius: 999px; margin-top: 20px; padding: 12px 18px; font: inherit; font-weight: 700; color: #18140a; background: var(--gold); cursor: pointer; }
+    .status { margin-top: 14px; padding: 10px 14px; border-radius: 12px; font-size: .9rem; display: none; }
+    .status.bad { display: block; background: rgba(255, 127, 102, .12); color: var(--red); border: 1px solid rgba(255, 127, 102, .25); }
+    .status.ok { display: block; background: rgba(133, 213, 138, .12); color: var(--green); border: 1px solid rgba(133, 213, 138, .25); }
+  </style>
+</head>
+<body>
+  <div class="login-box">
+    <h1>Management</h1>
+    <p>Enter your management key to access the tenant control room.</p>
+    <form id="loginForm">
+      <label for="key">Management key</label>
+      <input id="key" type="password" autocomplete="current-password" placeholder="Bearer token" required autofocus>
+      <button type="submit">Sign in</button>
+      <div id="status" class="status"></div>
+    </form>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    $('loginForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const status = $('status');
+      status.className = 'status';
+      try {
+        const response = await fetch('/management/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: $('key').value.trim() }),
+          credentials: 'same-origin'
+        });
+        if (response.ok) {
+          window.location.href = '/management';
+        } else {
+          const body = await response.json().catch(() => ({}));
+          status.textContent = body.detail || 'Authentication failed';
+          status.className = 'status bad';
+        }
+      } catch (err) {
+        status.textContent = 'Network error: ' + err.message;
+        status.className = 'status bad';
+      }
     };
   </script>
 </body>

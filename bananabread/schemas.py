@@ -72,6 +72,9 @@ class ManagementConfigUpdate(BaseModel):
     tiers: Optional[Dict[str, UsageLimits]] = None
     cache: Optional[CacheConfig] = None
 
+class ManagementLoginRequest(BaseModel):
+    key: str
+
 # ----- Ollama Compatible Schemas -----
 
 class OllamaMessage(BaseModel):

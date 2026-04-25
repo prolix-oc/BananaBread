@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, RedirectResponse
 from sentence_transformers.quantization import quantize_embeddings
 
 from bananabread.config import (
@@ -22,7 +22,8 @@ from bananabread.schemas import (
     OllamaEmbeddingRequest, OllamaEmbeddingResponse,
     LlamaCppEmbeddingRequest, LlamaCppEmbeddingResponse,
     HFModelDownloadRequest, HFModelDownloadResponse,
-    CreateUserRequest, CreateUserResponse, ManagementConfigUpdate
+    CreateUserRequest, CreateUserResponse, ManagementConfigUpdate,
+    ManagementLoginRequest,
 )
 from bananabread.cache import (
     UserScopedCache, CUDACacheManager,
@@ -37,7 +38,10 @@ from bananabread.utils import (
 )
 from bananabread.hf_models import download_hf_model, inspect_hf_model, resolve_model_repo_id
 from bananabread.tenancy import TenantStore, count_text_tokens
-from bananabread.admin_panel import ADMIN_PANEL_HTML
+from bananabread.admin_panel import ADMIN_PANEL_HTML, LOGIN_HTML
+from bananabread.auth import (
+    create_jwt, verify_jwt, set_auth_cookie, clear_auth_cookie
+)
 import bananabread.models.manager as models_manager
 from bananabread.models.manager import ModelPool
 
@@ -177,9 +181,24 @@ def get_api_user(api_key: str = Depends(get_api_key)):
     username = tenant_store.authenticate_user(api_key)
     return {"api_key": api_key, "username": username}
 
-def get_management_key(api_key: str = Depends(get_api_key)):
-    tenant_store.authenticate_management(api_key)
-    return api_key
+def get_management_key(request: Request, authorization: str = Header(None)):
+    # Try Bearer token first
+    if authorization and authorization.startswith("Bearer "):
+        api_key = authorization.split("Bearer ")[-1]
+        tenant_store.authenticate_management(api_key)
+        return api_key
+
+    # Fall back to JWT cookie
+    token = request.cookies.get("bananabread_auth")
+    if token:
+        try:
+            payload = verify_jwt(token)
+            if payload.get("mgmt"):
+                return token
+        except Exception:
+            pass
+
+    raise HTTPException(status_code=401, detail="Management authentication required")
 
 def get_embedding_tokenizer():
     model = models_manager.embedding_model
@@ -269,8 +288,36 @@ app.state.general_executor = general_executor
 
 # ----- Endpoints -----
 
+@app.get("/management/login", response_class=HTMLResponse)
+async def management_login_page():
+    return LOGIN_HTML
+
+@app.post("/management/auth")
+async def management_auth(request_data: ManagementLoginRequest, response: Response):
+    try:
+        tenant_store.authenticate_management(request_data.key)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="Invalid management key")
+
+    token = create_jwt({"mgmt": True})
+    set_auth_cookie(response, token)
+    return {"status": "ok"}
+
+@app.get("/management/logout")
+async def management_logout():
+    response = RedirectResponse(url="/management/login", status_code=302)
+    clear_auth_cookie(response)
+    return response
+
 @app.get("/management", response_class=HTMLResponse)
-async def management_panel():
+async def management_panel(request: Request):
+    token = request.cookies.get("bananabread_auth")
+    if not token:
+        return RedirectResponse(url="/management/login", status_code=302)
+    try:
+        verify_jwt(token)
+    except Exception:
+        return RedirectResponse(url="/management/login", status_code=302)
     return ADMIN_PANEL_HTML
 
 @app.get("/v1/management/config")

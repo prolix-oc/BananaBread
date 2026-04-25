@@ -201,7 +201,7 @@ ADMIN_PANEL_HTML = """<!doctype html>
             const result = await api(`/v1/management/users/${encodeURIComponent(user)}/regenerate`, { method: 'POST' });
             setStatus(`Regenerated key for ${result.username}.`);
             $('createdKey').hidden = false;
-            $('createdKey').textContent = `Regenerated ${result.username}\nNew API key: ${result.api_key}`;
+            $('createdKey').textContent = `Regenerated ${result.username}\\nNew API key: ${result.api_key}`;
             await loadConfig();
           } catch (error) { setStatus(error.message, false); }
         };
@@ -265,7 +265,7 @@ ADMIN_PANEL_HTML = """<!doctype html>
           body: JSON.stringify({ username: $('username').value, tier: $('userTier').value || null, limits: Object.keys(limits).length ? limits : null })
         });
         $('createdKey').hidden = false;
-        $('createdKey').textContent = `Created ${created.username}\nAPI key: ${created.api_key}`;
+        $('createdKey').textContent = `Created ${created.username}\\nAPI key: ${created.api_key}`;
         $('username').value = '';
         $('userDaily').value = '';
         $('userWeekly').value = '';
@@ -290,7 +290,7 @@ ADMIN_PANEL_HTML = """<!doctype html>
         setStatus(msg);
         if (okCount) {
           $('createdKey').hidden = false;
-          $('createdKey').textContent = result.regenerated.map((r) => `${r.username}: ${r.api_key}`).join('\n');
+          $('createdKey').textContent = result.regenerated.map((r) => `${r.username}: ${r.api_key}`).join('\\n');
         }
         await loadConfig();
       } catch (error) { setStatus(error.message, false); }

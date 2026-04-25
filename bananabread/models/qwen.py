@@ -295,6 +295,11 @@ class QwenOnnxModel(BaseQwenModel):
         resolved_model_path = self._resolve_onnx_path(model_path)
         session_options = ort.SessionOptions()
         session_options.optimized_model_filepath = str(self._optimized_onnx_path(resolved_model_path))
+        # Limit ONNX Runtime threads to 1 to avoid OpenMP contention with our own threadpool.
+        # BananaBread already manages concurrency via threadpool executors; letting ONNX
+        # spawn its own thread army causes livelock/hang during batch requests.
+        session_options.intra_op_num_threads = 1
+        session_options.inter_op_num_threads = 1
         available_providers = ort.get_available_providers()
         providers = [provider] if provider in available_providers else ["CPUExecutionProvider"]
         if provider not in available_providers:
@@ -303,7 +308,7 @@ class QwenOnnxModel(BaseQwenModel):
         self.session = ort.InferenceSession(str(resolved_model_path), sess_options=session_options, providers=providers)
         self.input_names = [input_meta.name for input_meta in self.session.get_inputs()]
         self.device = providers[0]
-        logger.info(f"Qwen ONNX model initialized with provider={providers[0]}")
+        logger.info(f"Qwen ONNX model initialized with provider={providers[0]} (intra_threads=1, inter_threads=1)")
 
     @staticmethod
     def _resolve_onnx_path(model_path: str) -> Path:
@@ -372,6 +377,19 @@ class QwenOnnxModel(BaseQwenModel):
             attention_mask = encoded["attention_mask"]
             outputs = self.session.run(None, self._prepare_onnx_inputs(encoded))
             last_hidden_state = outputs[0]
+
+            # Validate output shape: should be (batch_size, seq_len, hidden_dim)
+            if last_hidden_state.ndim != 3:
+                raise ValueError(
+                    f"ONNX model returned unexpected hidden-state shape {last_hidden_state.shape}. "
+                    f"Expected 3-D (batch_size, seq_len, hidden_dim)."
+                )
+            if last_hidden_state.shape[0] != len(batch):
+                raise ValueError(
+                    f"ONNX model batch dimension mismatch: got {last_hidden_state.shape[0]}, expected {len(batch)}. "
+                    f"The model may have been exported with a fixed batch size."
+                )
+
             batch_embeddings = self.last_token_pool(last_hidden_state, attention_mask)
             embeddings.append(batch_embeddings)
 

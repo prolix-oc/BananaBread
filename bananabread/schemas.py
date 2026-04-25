@@ -1,4 +1,4 @@
-from typing import Optional, List, Union, Dict
+from typing import Optional, List, Union, Dict, Any
 from pydantic import BaseModel
 
 # ----- Request Schemas -----
@@ -21,6 +21,56 @@ class ClassificationRequest(BaseModel):
     input: str
     top_k: int | None = None   # Optional; if provided, only the top K results will be returned.
     sorted: bool = False       # If True, sort results from highest to lowest score.
+
+class HFModelDownloadRequest(BaseModel):
+    author: Optional[str] = None
+    path: Optional[str] = None
+    model_name: Optional[str] = None
+    size: Optional[str] = None
+    revision: Optional[str] = None
+    storage_dir: Optional[str] = None
+    hf_access_token: Optional[str] = None
+    require_embedding_capable: bool = True
+    download: bool = True
+    allow_patterns: Optional[Union[str, List[str]]] = None
+    ignore_patterns: Optional[Union[str, List[str]]] = None
+
+class HFModelDownloadResponse(BaseModel):
+    repo_id: str
+    local_path: Optional[str] = None
+    downloaded: bool
+    metadata: Dict[str, Any]
+
+class UsageLimits(BaseModel):
+    daily: Optional[int] = None
+    weekly: Optional[int] = None
+
+class CreateUserRequest(BaseModel):
+    username: str
+    tier: Optional[str] = None
+    limits: Optional[UsageLimits] = None
+
+class CreateUserResponse(BaseModel):
+    username: str
+    api_key: str
+    tier: Optional[str] = None
+    limits: UsageLimits
+
+class UserCacheLimits(BaseModel):
+    embedding_mb: Optional[int] = None
+    rerank_mb: Optional[int] = None
+
+class CacheConfig(BaseModel):
+    scope: str = "global"
+    default_embedding_mb: Optional[int] = None
+    default_rerank_mb: Optional[int] = None
+    users: Dict[str, UserCacheLimits] = {}
+
+class ManagementConfigUpdate(BaseModel):
+    management_key: Optional[str] = None
+    default_limits: Optional[UsageLimits] = None
+    tiers: Optional[Dict[str, UsageLimits]] = None
+    cache: Optional[CacheConfig] = None
 
 # ----- Ollama Compatible Schemas -----
 

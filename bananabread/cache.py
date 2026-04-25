@@ -224,25 +224,126 @@ class LimitedCache(OrderedDict):
         super().__init__(*args, **kwargs)
         self.cache_limit_bytes = cache_limit_bytes
         self.current_size = 0
+        self.lock = threading.RLock()
     
     def __setitem__(self, key, value):
-        # If key already exists, remove its previous size.
-        if key in self:
-            self.current_size -= get_cache_size(self[key])
-        super().__setitem__(key, value)
-        self.current_size += get_cache_size(value)
-        self._evict_if_needed()
+        with self.lock:
+            # If key already exists, remove its previous size.
+            if OrderedDict.__contains__(self, key):
+                self.current_size -= get_cache_size(OrderedDict.__getitem__(self, key))
+            OrderedDict.__setitem__(self, key, value)
+            self.current_size += get_cache_size(value)
+            self._evict_if_needed()
     
     def __getitem__(self, key):
-        value = super().__getitem__(key)
-        self.move_to_end(key)
-        return value
+        with self.lock:
+            value = OrderedDict.__getitem__(self, key)
+            self.move_to_end(key)
+            return value
+
+    def __contains__(self, key):
+        with self.lock:
+            return OrderedDict.__contains__(self, key)
+
+    def clear(self):
+        with self.lock:
+            OrderedDict.clear(self)
+            self.current_size = 0
+
+    def set_limit(self, cache_limit_bytes: int):
+        with self.lock:
+            self.cache_limit_bytes = cache_limit_bytes
+            self._evict_if_needed()
+
+    def stats(self):
+        with self.lock:
+            return {
+                "entries": len(self),
+                "current_size": self.current_size,
+                "limit": self.cache_limit_bytes,
+            }
     
     def _evict_if_needed(self):
         # Evict the oldest items until current size is within the limit.
-        while self.current_size > self.cache_limit_bytes and len(self) > 0:
-            old_key, old_value = self.popitem(last=False)
-            self.current_size -= get_cache_size(old_value)
+        # Cap iterations to prevent any theoretical infinite loop.
+        max_evictions = len(self)
+        evicted = 0
+        while self.current_size > self.cache_limit_bytes and len(self) > 0 and evicted < max_evictions:
+            old_key, old_value = OrderedDict.popitem(self, last=False)
+            size_removed = get_cache_size(old_value)
+            self.current_size = max(0, self.current_size - size_removed)
+            evicted += 1
+
+
+class UserScopedCache:
+    def __init__(self, global_limit_bytes: int):
+        self.global_limit_bytes = global_limit_bytes
+        self.default_limit_bytes = global_limit_bytes
+        self.scope = "global"
+        self.user_limits: dict[str, int] = {}
+        self.global_cache = LimitedCache(global_limit_bytes)
+        self.user_caches: dict[str, LimitedCache] = {}
+        self.lock = threading.RLock()
+
+    def configure(
+        self,
+        scope: str = "global",
+        default_limit_bytes: int | None = None,
+        user_limits: dict[str, int] | None = None,
+    ):
+        if scope not in {"global", "per_user"}:
+            raise ValueError("cache scope must be 'global' or 'per_user'")
+
+        with self.lock:
+            self.scope = scope
+            self.default_limit_bytes = default_limit_bytes or self.global_limit_bytes
+            self.user_limits = user_limits or {}
+            self.global_cache.set_limit(self.default_limit_bytes)
+            for username, cache in self.user_caches.items():
+                cache.set_limit(self._limit_for_user_locked(username))
+
+    def get(self, username: str, key: str):
+        cache = self._cache_for_user(username)
+        if key not in cache:
+            return None
+        return cache[key]
+
+    def set(self, username: str, key: str, value: Any):
+        self._cache_for_user(username)[key] = value
+
+    def clear(self):
+        with self.lock:
+            self.global_cache.clear()
+            for cache in self.user_caches.values():
+                cache.clear()
+
+    def stats(self):
+        with self.lock:
+            return {
+                "scope": self.scope,
+                "global": self.global_cache.stats(),
+                "users": {
+                    username: cache.stats()
+                    for username, cache in self.user_caches.items()
+                },
+            }
+
+    def total_size(self) -> int:
+        with self.lock:
+            return self.global_cache.current_size + sum(
+                cache.current_size for cache in self.user_caches.values()
+            )
+
+    def _cache_for_user(self, username: str) -> LimitedCache:
+        with self.lock:
+            if self.scope == "global":
+                return self.global_cache
+            if username not in self.user_caches:
+                self.user_caches[username] = LimitedCache(self._limit_for_user_locked(username))
+            return self.user_caches[username]
+
+    def _limit_for_user_locked(self, username: str) -> int:
+        return self.user_limits.get(username, self.default_limit_bytes)
 
 # ----- Cache Key Helpers -----
 

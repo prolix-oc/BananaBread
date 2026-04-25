@@ -162,6 +162,10 @@ DEFAULTS = {
     "qwen_onnx_model_path": None,
     "qwen_onnx_provider": "CPUExecutionProvider",
     "qwen_max_length": 8192,
+    "model_storage_dir": "./models",
+    "hf_model_slug": None,
+    "hf_model_revision": None,
+    "hf_access_token": None,
     "seed": 65,
     # None defaults for optional overrides
     "use_cores": None,
@@ -175,11 +179,13 @@ DEFAULTS = {
     "enable_torch_compile": False,
     "enable_warmup": True,
     "cuda_cache_ttl_enabled": False,
-    "log_embeddings": False
+    "log_embeddings": False,
+    "seed_management_key": None,
+    "seed_user_key": None,
 }
 
 CONFIG_CHOICES = {
-    "embedding_model": {"mixedbread", "qwen"},
+    "embedding_model": {"mixedbread", "qwen", "hf"},
     "reranking_model": {"mixedbread", "qwen", None},
     "qwen_size": {"0.6B", "4B", "8B"},
     "qwen_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit", "onnx-int8"},
@@ -382,7 +388,7 @@ def parse_args():
                        help=f"Number of warmup inference samples to run (default: {DEFAULTS['warmup_samples']})")
 
     # Embedding model selection arguments
-    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen'], default=DEFAULTS["embedding_model"],
+    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'hf'], default=DEFAULTS["embedding_model"],
                        help=f"Embedding model to use (default: {DEFAULTS['embedding_model']})")
     parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default=DEFAULTS["qwen_size"],
                        help=f"Qwen model size to use when --embedding-model=qwen (default: {DEFAULTS['qwen_size']})")
@@ -398,6 +404,14 @@ def parse_args():
                        help=f"Maximum token length for Qwen embedding inputs (default: {DEFAULTS['qwen_max_length']})")
     parser.add_argument("--qwen-flash-attention", action='store_true', default=DEFAULTS.get("qwen_flash_attention"),
                        help="Enable flash_attention_2 for Qwen models (requires compatible GPU)")
+    parser.add_argument("--model-storage-dir", type=str, default=DEFAULTS["model_storage_dir"],
+                       help=f"Directory for explicitly downloaded model snapshots (default: {DEFAULTS['model_storage_dir']})")
+    parser.add_argument("--hf-model-slug", type=str, default=DEFAULTS.get("hf_model_slug"),
+                       help="Hugging Face model slug to use when --embedding-model=hf, e.g. sentence-transformers/all-MiniLM-L6-v2")
+    parser.add_argument("--hf-model-revision", type=str, default=DEFAULTS.get("hf_model_revision"),
+                       help="Optional Hugging Face model revision for --embedding-model=hf")
+    parser.add_argument("--hf-access-token", type=str, default=DEFAULTS.get("hf_access_token"),
+                       help="Hugging Face access token for private or gated models")
 
     # Reranking model selection arguments
     parser.add_argument("--reranking-model", type=str, choices=['mixedbread', 'qwen'], default=DEFAULTS.get("reranking_model"),
@@ -406,6 +420,12 @@ def parse_args():
     # Determinism
     parser.add_argument("--seed", type=int, default=DEFAULTS["seed"],
                         help="Random seed for reproducibility. Set to -1 for random seed. (default: 42)")
+
+    # Seeding
+    parser.add_argument("--seed-management-key", type=str, default=DEFAULTS.get("seed_management_key"),
+                        help="If set, automatically configure the management key on first startup when api_keys.json does not exist")
+    parser.add_argument("--seed-user-key", type=str, default=DEFAULTS.get("seed_user_key"),
+                        help="If set, override the auto-generated user API key on first startup when api_keys.json does not exist")
 
     # Load configuration and apply to parser defaults
     config = load_config(config_path)

@@ -63,6 +63,17 @@ Leave the value empty and BananaBread will fill in a random key on startup. You 
 
 Each empty value gets a unique key generated automatically. Use the key as a Bearer token for authenticated endpoints (see [API Endpoints](#api-endpoints)).
 
+If you want predictable keys on first startup without manually editing `api_keys.json`, set them in `config.json`:
+
+```json
+{
+    "seed_management_key": "your-management-key",
+    "seed_user_key": "your-user-key"
+}
+```
+
+These are only applied when `api_keys.json` does not exist. Once the file is created, changing these values in `config.json` has no effect.
+
 ### 3. Test it
 
 Once the server is running, open **http://localhost:8008/docs** in your browser to see the interactive API docs, or send a quick test request:
@@ -118,6 +129,22 @@ uv run bananabread-emb --embedding-model qwen --reranking-model mixedbread
 
 `qwen_backend` controls how the model itself runs. `quant` controls the returned embedding vectors after inference. For example, `qwen_backend=onnx-int8` uses an INT8 ONNX model, while `quant=int8` returns scalar-int8 embedding vectors to clients.
 
+### Using a Hugging Face embedding model
+
+You can run a SentenceTransformers or embedding-capable Hugging Face model by slug. BananaBread resolves and validates the Hub metadata, downloads the snapshot into `model_storage_dir`, then loads the local snapshot with SentenceTransformers:
+
+```bash
+uv run bananabread-emb --embedding-model hf --hf-model-slug sentence-transformers/all-MiniLM-L6-v2
+```
+
+Use `--hf-model-revision` to pin a branch, tag, or commit SHA. Use `--hf-access-token` for private or gated models:
+
+```bash
+uv run bananabread-emb --embedding-model hf --hf-model-slug org/private-model --hf-access-token hf_...
+```
+
+Existing `mixedbread` and `qwen` run commands keep their standard behavior.
+
 ### Config file
 
 BananaBread creates a `config.json` in the current working directory on first run. You can also copy `config.default.json` to `config.json` and edit it. The keys use the same names as the flags (with underscores instead of dashes). Hyphenated keys are also accepted and normalized. Command-line flags override config file values.
@@ -136,7 +163,7 @@ All available options (grouped by purpose):
 |---|---|---|
 | `config` | `"config.json"` | Path to the config JSON file, or set `BANANABREAD_CONFIG` |
 | **Model selection** | | |
-| `embedding_model` | `"mixedbread"` | `"mixedbread"` or `"qwen"` |
+| `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, or `"hf"` |
 | `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, or `null` (auto: matches embedding model) |
 | `qwen_size` | `"0.6B"` | Qwen model size: `"0.6B"`, `"4B"`, or `"8B"` |
 | `qwen_backend` | `"torch"` | Qwen runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, or `"onnx-int8"` |
@@ -145,6 +172,10 @@ All available options (grouped by purpose):
 | `qwen_onnx_provider` | `"CPUExecutionProvider"` | ONNX Runtime execution provider |
 | `qwen_max_length` | `8192` | Maximum token length for Qwen embedding inputs |
 | `qwen_flash_attention` | `false` | Enable Flash Attention 2 for Qwen models |
+| `model_storage_dir` | `"./models"` | Directory used by `/v1/models/download` for explicit model snapshots |
+| `hf_model_slug` | `null` | Hugging Face repo id used when `embedding_model="hf"` |
+| `hf_model_revision` | `null` | Optional branch, tag, or commit SHA for `hf_model_slug` |
+| `hf_access_token` | `null` | Optional Hugging Face token for private or gated model metadata/downloads |
 | **Device placement** | | |
 | `embedding_device` | `"cpu"` | `"cpu"`, `"cuda"`, `"cuda:0"`, etc. |
 | `rerank_device` | `"cpu"` | Same options as above |
@@ -179,6 +210,9 @@ All available options (grouped by purpose):
 | `log_embeddings` | `false` | Log embedding queries and results to `embeddings.log` |
 | **Miscellaneous** | | |
 | `seed` | `65` | Random seed for reproducibility (`-1` for random) |
+| **Seeding (first startup only)** | | |
+| `seed_management_key` | `null` | Auto-configure the management key when `api_keys.json` does not exist |
+| `seed_user_key` | `null` | Override the auto-generated user API key when `api_keys.json` does not exist |
 
 ---
 
@@ -284,6 +318,7 @@ Ollama and llama.cpp-compatible endpoints do **not** require authentication.
 | `POST /v1/embeddings` | Yes | OpenAI | Generate embeddings (single or batch) |
 | `POST /v1/rerank` | Yes | Custom | Rerank documents against a query |
 | `POST /v1/classify` | Yes | Custom | Classify text by emotion |
+| `POST /v1/models/download` | Yes | Custom | Resolve, inspect, and optionally download a Hugging Face model snapshot |
 | `POST /v1/models` | Yes | OpenAI | List loaded models |
 | `POST /v1/health` | Yes | Custom | Health check |
 | `POST /v1/memory` | Yes | Custom | Memory and thread usage stats |
@@ -293,6 +328,25 @@ Ollama and llama.cpp-compatible endpoints do **not** require authentication.
 | `GET /` | No | — | Server info and status |
 
 Full interactive docs are available at **http://localhost:8008/docs** (Swagger) and **http://localhost:8008/redoc** (ReDoc) while the server is running.
+
+### Management endpoints (optional)
+
+These endpoints require the **management key** (set via `seed_management_key` in config, or through the web admin panel). If no management key is configured, these endpoints return `403`.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `GET /v1/management/config` | GET | View current tenants, tiers, limits, and cache config |
+| `PATCH /v1/management/config` | PATCH | Update management key, default limits, tiers, or cache settings |
+| `POST /v1/management/users` | POST | Create a new user with optional tier and custom limits |
+| `GET /management` | GET | Web admin panel for managing users, tiers, and cache settings |
+
+Token limits are enforced per user and automatically reset at daily and weekly intervals. Limits can be set at three levels (most specific wins):
+
+1. **Per-user limits** — set when creating a user or via the admin panel
+2. **Tier limits** — shared limits for a group of users
+3. **Default limits** — fallback for all users without overrides
+
+Cache scope can be `global` (default, shared across all users) or `per_user` (each user gets an isolated cache with its own limit).
 
 ### Request examples
 
@@ -344,6 +398,21 @@ curl -X POST http://localhost:8008/v1/classify \
     "sorted": true
   }'
 ```
+
+#### Download a Hugging Face embedding model
+```bash
+curl -X POST http://localhost:8008/v1/models/download \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "author": "sentence-transformers",
+    "path": "all-MiniLM-L6-v2"
+  }'
+```
+
+The downloader accepts `author` + `path`, a direct repo id in `path`, or standard selectors such as `{"model_name":"qwen","size":"0.6B"}`. It checks Hub metadata for SentenceTransformers or embedding capability before downloading unless `require_embedding_capable` is set to `false`.
+
+For private or gated models, pass `hf_access_token` in the request body or configure `hf_access_token`/`--hf-access-token` on the server. The token is used for Hub metadata and snapshot download calls and is not returned in the response.
 
 ### Python example
 

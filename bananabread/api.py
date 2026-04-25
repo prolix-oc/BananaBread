@@ -1,20 +1,16 @@
-import os
-import json
-import time
 import threading
 import asyncio
-import secrets
 import base64
-import asyncio
 import torch
 import numpy as np
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Any, Union, List
+from typing import List
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 from sentence_transformers.quantization import quantize_embeddings
 
 from bananabread.config import (
@@ -24,12 +20,13 @@ from bananabread.config import (
 from bananabread.schemas import (
     RerankRequest, EmbeddingRequest, ClassificationRequest,
     OllamaEmbeddingRequest, OllamaEmbeddingResponse,
-    LlamaCppEmbeddingRequest, LlamaCppEmbeddingResponse
+    LlamaCppEmbeddingRequest, LlamaCppEmbeddingResponse,
+    HFModelDownloadRequest, HFModelDownloadResponse,
+    CreateUserRequest, CreateUserResponse, ManagementConfigUpdate
 )
 from bananabread.cache import (
-    LimitedCache, CUDACacheManager,
+    UserScopedCache, CUDACacheManager,
     get_rerank_cache_key, get_embedding_cache_key,
-    get_cache_size
 )
 from bananabread.utils import (
     CustomProgressTracker, 
@@ -38,6 +35,9 @@ from bananabread.utils import (
     get_process_memory_usage,
     get_model_memory_usage
 )
+from bananabread.hf_models import download_hf_model, inspect_hf_model, resolve_model_repo_id
+from bananabread.tenancy import TenantStore, count_text_tokens
+from bananabread.admin_panel import ADMIN_PANEL_HTML
 import bananabread.models.manager as models_manager
 from bananabread.models.manager import ModelPool
 
@@ -107,8 +107,8 @@ cache_limit_bytes = args.cache_limit * 1024 * 1024
 logger.info(f"💾 Using cache limit: {args.cache_limit} MB ({cache_limit_bytes} bytes)")
 logger.info(f"🔢 Embedding quantization: {args.quant}")
 
-rerank_cache = LimitedCache(cache_limit_bytes)
-embedding_cache = LimitedCache(cache_limit_bytes)
+rerank_cache = UserScopedCache(cache_limit_bytes)
+embedding_cache = UserScopedCache(cache_limit_bytes)
 
 # Initialize CUDA cache manager
 cuda_cache_manager = CUDACacheManager(
@@ -122,43 +122,79 @@ cuda_cache_manager = CUDACacheManager(
 
 API_KEYS_FILE = "./api_keys.json"
 api_keys = {}
+tenant_store = TenantStore(API_KEYS_FILE)
 
 def load_api_keys():
     global api_keys
-    if os.path.exists(API_KEYS_FILE):
-        with open(API_KEYS_FILE, "r") as f:
-            api_keys = json.load(f)
-        logger.info(f"🔑 Loaded API keys from {API_KEYS_FILE}")
-    else:
-        # Create default api_keys.json with a 'user' key on first startup
-        new_key = secrets.token_hex(16)
-        api_keys = {"user": new_key}
-        with open(API_KEYS_FILE, "w") as f:
-            json.dump(api_keys, f, indent=4)
-        logger.info(f"🔑 Created {API_KEYS_FILE} with default 'user' API key: {new_key}")
-        return
+    was_fresh = not tenant_store.path.exists()
+    tenant_store.load()
+    if was_fresh:
+        if getattr(args, "seed_management_key", None) and not tenant_store.data.get("management_key"):
+            tenant_store.update_config(management_key=args.seed_management_key)
+            logger.info("🔑 Seeded management key from config")
+        if getattr(args, "seed_user_key", None) and "user" in tenant_store.data.get("users", {}):
+            tenant_store.set_user_api_key("user", args.seed_user_key)
+            logger.info("🔑 Seeded user API key from config")
+    apply_cache_config()
+    api_keys = {
+        username: record["api_key"]
+        for username, record in tenant_store.data.get("users", {}).items()
+    }
+    logger.info(f"🔑 Loaded API keys from {API_KEYS_FILE}")
 
-    updated = False
-    # For each user in the file, if no API key is provided, generate one.
-    for user, key in api_keys.items():
-        if not key:
-            new_key = secrets.token_hex(16)
-            api_keys[user] = new_key
-            logger.info(f"🔑 Generated new API key for user '{user}'")
-            updated = True
-    if updated:
-        with open(API_KEYS_FILE, "w") as f:
-            json.dump(api_keys, f, indent=4)
+def mb_to_bytes(value: int | None, fallback_bytes: int) -> int:
+    return fallback_bytes if value is None else value * 1024 * 1024
+
+def apply_cache_config():
+    cache_config = tenant_store.cache_config()
+    embedding_cache.configure(
+        scope=cache_config["scope"],
+        default_limit_bytes=mb_to_bytes(cache_config.get("default_embedding_mb"), cache_limit_bytes),
+        user_limits={
+            username: mb_to_bytes(limits.get("embedding_mb"), cache_limit_bytes)
+            for username, limits in cache_config.get("users", {}).items()
+            if limits.get("embedding_mb") is not None
+        },
+    )
+    rerank_cache.configure(
+        scope=cache_config["scope"],
+        default_limit_bytes=mb_to_bytes(cache_config.get("default_rerank_mb"), cache_limit_bytes),
+        user_limits={
+            username: mb_to_bytes(limits.get("rerank_mb"), cache_limit_bytes)
+            for username, limits in cache_config.get("users", {}).items()
+            if limits.get("rerank_mb") is not None
+        },
+    )
 
 load_api_keys()
 
 def get_api_key(authorization: str = Header(None)):
     if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    api_key = authorization.split("Bearer ")[-1]
-    if api_key not in api_keys.values():
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    return authorization.split("Bearer ")[-1]
+
+def get_api_user(api_key: str = Depends(get_api_key)):
+    username = tenant_store.authenticate_user(api_key)
+    return {"api_key": api_key, "username": username}
+
+def get_management_key(api_key: str = Depends(get_api_key)):
+    tenant_store.authenticate_management(api_key)
     return api_key
+
+def get_embedding_tokenizer():
+    model = models_manager.embedding_model
+    if model is None and models_manager.embedding_model_pool:
+        models = models_manager.embedding_model_pool.get_all_models()
+        model = models[0] if models else None
+    return getattr(model, "tokenizer", None)
+
+def count_usage_tokens(texts: List[str]) -> int:
+    return count_text_tokens(texts, get_embedding_tokenizer())
+
+def consume_user_tokens(username: str, texts: List[str]) -> int:
+    tokens = count_usage_tokens(texts)
+    tenant_store.check_and_consume(username, tokens)
+    return tokens
 
 # ----- Lifespan Manager -----
 
@@ -233,14 +269,47 @@ app.state.general_executor = general_executor
 
 # ----- Endpoints -----
 
+@app.get("/management", response_class=HTMLResponse)
+async def management_panel():
+    return ADMIN_PANEL_HTML
+
+@app.get("/v1/management/config")
+async def get_management_config(api_key: str = Depends(get_management_key)):
+    return tenant_store.snapshot()
+
+@app.patch("/v1/management/config")
+async def update_management_config(request: ManagementConfigUpdate, api_key: str = Depends(get_management_key)):
+    default_limits = request.default_limits.model_dump() if request.default_limits else None
+    tiers = {
+        tier: limits.model_dump()
+        for tier, limits in request.tiers.items()
+    } if request.tiers is not None else None
+    snapshot = tenant_store.update_config(
+        management_key=request.management_key,
+        default_limits=default_limits,
+        tiers=tiers,
+        cache=request.cache.model_dump() if request.cache else None,
+    )
+    if request.cache is not None:
+        apply_cache_config()
+    return snapshot
+
+@app.post("/v1/management/users", response_model=CreateUserResponse)
+async def create_user_endpoint(request: CreateUserRequest, api_key: str = Depends(get_management_key)):
+    limits = request.limits.model_dump() if request.limits else None
+    return tenant_store.create_user(request.username, tier=request.tier, limits=limits)
+
 @app.post("/v1/rerank")
-async def rerank_endpoint(request: RerankRequest, api_key: str = Depends(get_api_key)):
+async def rerank_endpoint(request: RerankRequest, auth: dict = Depends(get_api_user)):
     if not request.query or not request.documents:
         raise HTTPException(status_code=400, detail="Query or documents must be provided")
+
+    consume_user_tokens(auth["username"], [request.query, *request.documents])
     
     key = get_rerank_cache_key(request.query, request.documents, request.top_k, request.return_documents, request.task_description)
-    if key in rerank_cache:
-        return rerank_cache[key]
+    cached = rerank_cache.get(auth["username"], key)
+    if cached is not None:
+        return cached
     
     # Mark inference activity for CUDA cache manager
     cuda_cache_manager.mark_inference_activity()
@@ -276,11 +345,11 @@ async def rerank_endpoint(request: RerankRequest, api_key: str = Depends(get_api
         torch.cuda.empty_cache()
         logger.debug("Cleared CUDA cache after reranking")
     
-    rerank_cache[key] = result
+    rerank_cache.set(auth["username"], key, result)
     return result
 
 @app.post("/v1/embeddings")
-async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(get_api_key)):
+async def embedding_endpoint(request: EmbeddingRequest, auth: dict = Depends(get_api_user)):
     # Handle inputs
     if isinstance(request.input, str):
         inputs = [request.input]
@@ -295,12 +364,16 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
 
     if not inputs:
         raise HTTPException(status_code=400, detail="Input must be provided")
+    prompt_tokens = consume_user_tokens(auth["username"], inputs)
     
     logger.info(f"📄 Processing {len(inputs)} documents for embeddings (format: {request.encoding_format})")
     
     key = get_embedding_cache_key(inputs, request.encoding_format) if inputs else ""
-    if key in embedding_cache:
-        return embedding_cache[key]
+    cached = embedding_cache.get(auth["username"], key)
+    if cached is not None:
+        cached_result = deepcopy(cached)
+        cached_result["usage"] = {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens}
+        return cached_result
     
     cuda_cache_manager.mark_inference_activity()
     
@@ -409,7 +482,7 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         metadata={
             "model": models_manager.embedding_model_name,
             "quantization": args.quant,
-            "embedding_dimensions": args.embedding_dim if args.embedding_model == 'mixedbread' else "native"
+            "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'hf'} else "native"
         }
     )
     
@@ -425,13 +498,13 @@ async def embedding_endpoint(request: EmbeddingRequest, api_key: str = Depends(g
         "object": "list",
         "data": data,
         "model": models_manager.embedding_model_name,
-        "usage": {"prompt_tokens": 0, "total_tokens": 0}
+        "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens}
     }
-    embedding_cache[key] = result
+    embedding_cache.set(auth["username"], key, result)
     return result
 
 @app.post("/v1/classify")
-async def classify_endpoint(request: ClassificationRequest, api_key: str = Depends(get_api_key)):
+async def classify_endpoint(request: ClassificationRequest, api_key: str = Depends(get_management_key)):
     clf = models_manager.get_classifier()
     raw_result = await run_in_threadpool_with_executor(
         classification_executor,
@@ -457,9 +530,56 @@ async def classify_endpoint(request: ClassificationRequest, api_key: str = Depen
     
     return {"result": normalized_results}
 
+@app.post("/v1/models/download", response_model=HFModelDownloadResponse)
+async def download_model_endpoint(request: HFModelDownloadRequest, api_key: str = Depends(get_management_key)):
+    try:
+        repo_id = resolve_model_repo_id(
+            author=request.author,
+            path=request.path,
+            model_name=request.model_name,
+            size=request.size,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    def inspect_and_download():
+        hf_access_token = request.hf_access_token or args.hf_access_token
+        metadata = inspect_hf_model(repo_id, revision=request.revision, token=hf_access_token)
+        if request.require_embedding_capable and not metadata["is_embedding_capable"]:
+            raise ValueError(
+                f"Model '{repo_id}' does not appear to be SentenceTransformers or embedding capable. "
+                "Set require_embedding_capable=false to download anyway."
+            )
+
+        local_path = None
+        if request.download:
+            local_path = download_hf_model(
+                repo_id,
+                storage_dir=request.storage_dir or args.model_storage_dir,
+                revision=request.revision,
+                token=hf_access_token,
+                allow_patterns=request.allow_patterns,
+                ignore_patterns=request.ignore_patterns,
+            )
+
+        return {
+            "repo_id": repo_id,
+            "local_path": local_path,
+            "downloaded": request.download,
+            "metadata": metadata,
+        }
+
+    try:
+        return await run_in_threadpool_with_executor(general_executor, inspect_and_download)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ Error downloading Hugging Face model '{repo_id}': {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=str(e))
+
 @app.post("/api/embeddings")
 @app.post("/api/embed")
-async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest):
+async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest, auth: dict = Depends(get_api_user)):
     if request.prompt:
         inputs = [request.prompt]
     elif request.input:
@@ -474,6 +594,7 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest):
     
     if not inputs:
         raise HTTPException(status_code=400, detail="Input must be provided")
+    consume_user_tokens(auth["username"], inputs)
     
     logger.info(f"📄 Processing {len(inputs)} documents for Ollama embeddings")
     
@@ -516,7 +637,7 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest):
     )
 
 @app.post("/embedding")
-async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
+async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest, auth: dict = Depends(get_api_user)):
     try:
         if not request.content:
             raise HTTPException(status_code=400, detail="Content must be provided")
@@ -527,6 +648,7 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
         else:
             inputs = request.content
             is_batch = True
+        consume_user_tokens(auth["username"], inputs)
             
         logger.info(f"📄 Processing {len(inputs)} document(s) for Llama.cpp embeddings")
         
@@ -620,12 +742,16 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/v1/memory")
-async def memory_usage(api_key: str = Depends(get_api_key)):
+async def memory_usage(api_key: str = Depends(get_management_key)):
     data = {}
     data["process_memory"] = get_process_memory_usage()
     data["rerank_model_memory"] = get_model_memory_usage(models_manager.rerank_model)
     data["embedding_model_memory"] = get_model_memory_usage(models_manager.embedding_model)
-    data["embedding_cache_memory"] = get_cache_size(embedding_cache)
+    data["embedding_cache_memory"] = embedding_cache.total_size()
+    data["cache_stats"] = {
+        "embedding": embedding_cache.stats(),
+        "rerank": rerank_cache.stats(),
+    }
     
     data["cpu_cores"] = CPU_COUNT
     data["total_physical_cores"] = TOTAL_PHYSICAL_CORES
@@ -645,11 +771,11 @@ async def memory_usage(api_key: str = Depends(get_api_key)):
     return data
 
 @app.get("/v1/health")
-async def health(api_key: str = Depends(get_api_key)):
+async def health(api_key: str = Depends(get_api_user)):
     return {"status": "healthy", "cpu_cores": CPU_COUNT, "optimized": True}
 
 @app.get("/v1/models")
-async def model(api_key: str = Depends(get_api_key)):
+async def model(api_key: str = Depends(get_api_user)):
     return {"object": "list",
             "data": [
                 {
@@ -671,11 +797,15 @@ async def read_root():
         "embedding_model": args.embedding_model,
         "embedding_model_name": models_manager.embedding_model_name,
         "embedding_quantization": args.quant,
-        "embedding_dimensions": args.embedding_dim if args.embedding_model == 'mixedbread' else "native",
+        "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'hf'} else "native",
         "endpoints": {
             "embeddings": "/v1/embeddings",
             "rerank": "/v1/rerank", 
             "classify": "/v1/classify",
+            "management_panel": "/management",
+            "management_config": "/v1/management/config",
+            "create_user": "/v1/management/users",
+            "download_model": "/v1/models/download",
             "memory": "/v1/memory",
             "health": "/v1/health",
             "models": "/v1/models"

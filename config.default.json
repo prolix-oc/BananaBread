@@ -8,6 +8,10 @@
     "qwen_onnx_provider": "CPUExecutionProvider",
     "qwen_max_length": 8192,
     "qwen_flash_attention": false,
+    "model_storage_dir": "./models",
+    "hf_model_slug": null,
+    "hf_model_revision": null,
+    "hf_access_token": null,
 
     "embedding_device": "cpu",
     "rerank_device": "cpu",
@@ -41,5 +45,8 @@
     "log_level": "INFO",
     "log_embeddings": false,
 
-    "seed": 65
+    "seed": 65,
+
+    "seed_management_key": null,
+    "seed_user_key": null
 }

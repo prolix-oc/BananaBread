@@ -73,6 +73,37 @@ def verify_flash_attn_import():
     return subprocess.run(cmd)
 
 
+def _has_pip():
+    """Check whether the current interpreter has pip available."""
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "--version"],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def _has_uv():
+    """Check whether the `uv` command is available on PATH."""
+    return subprocess.run(
+        ["uv", "--version"],
+        capture_output=True,
+    ).returncode == 0
+
+
+def build_install_cmd(url: str):
+    """Return the package-install command for the current environment.
+
+    Prefers `uv pip install` when `uv` is available (common for uv-managed
+    venvs that don't ship pip). Falls back to `python -m pip install` when
+    pip is present. Otherwise returns ``None``.
+    """
+    if _has_uv():
+        return ["uv", "pip", "install", "--python", sys.executable, url]
+    if _has_pip():
+        return [sys.executable, "-m", "pip", "install", url]
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Install a precompiled Flash Attention 2 wheel for your platform.",
@@ -150,12 +181,25 @@ def main():
     print(f"Wheel:    {url}")
     print()
 
+    cmd = build_install_cmd(url)
+
     if args.dry_run:
         print("[dry-run] Would execute:")
-        print(f"  {sys.executable} -m pip install \"{url}\"")
+        if cmd:
+            print(f"  {' '.join(cmd)}")
+        else:
+            print("  (no package manager found – neither uv nor pip available)")
         return
 
-    cmd = [sys.executable, "-m", "pip", "install", url]
+    if cmd is None:
+        print(
+            "ERROR: No package manager found.\n"
+            "  - If you're using uv, ensure `uv` is on your PATH.\n"
+            "  - If you're using pip, ensure pip is installed in this environment.\n"
+        )
+        sys.exit(1)
+
+    print(f"Using: {' '.join(cmd[:2])}")
     print("Installing...")
     result = subprocess.run(cmd)
 
@@ -172,6 +216,8 @@ def main():
     else:
         print(f"\nInstallation failed (exit code {result.returncode}).")
         print("You can try manually:")
+        print(f"  uv pip install --python {sys.executable} \"{url}\"")
+        print("or")
         print(f"  pip install \"{url}\"")
         sys.exit(result.returncode)
 

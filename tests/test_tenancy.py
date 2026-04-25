@@ -298,3 +298,71 @@ def test_fresh_file_creates_default_user_with_null_management_key(tmp_path):
     assert "user" in store.data["users"]
     assert store.data["users"]["user"]["api_key"]
     assert store.data["management_key"] is None
+
+
+def test_regenerate_user_api_key_creates_new_key_and_invalidates_old(tmp_path):
+    path = tmp_path / "api_keys.json"
+    path.write_text(json.dumps({"users": {"alice": {"api_key": "old-key"}}}))
+    store = TenantStore(str(path))
+    store.load()
+
+    new_key = store.regenerate_user_api_key("alice")
+
+    assert new_key != "old-key"
+    assert len(new_key) == 48  # token_hex(24) -> 48 hex chars
+    assert store.authenticate_user(new_key) == "alice"
+
+    with pytest.raises(HTTPException) as exc:
+        store.authenticate_user("old-key")
+    assert exc.value.status_code == 401
+
+
+def test_regenerate_user_api_key_rejects_unknown_user(tmp_path):
+    path = tmp_path / "api_keys.json"
+    path.write_text(json.dumps({"users": {}}))
+    store = TenantStore(str(path))
+    store.load()
+
+    with pytest.raises(HTTPException) as exc:
+        store.regenerate_user_api_key("bob")
+    assert exc.value.status_code == 404
+
+
+def test_bulk_regenerate_user_api_keys_regenerates_multiple_users(tmp_path):
+    path = tmp_path / "api_keys.json"
+    path.write_text(json.dumps({"users": {"alice": {"api_key": "alice-old"}, "bob": {"api_key": "bob-old"}}}))
+    store = TenantStore(str(path))
+    store.load()
+
+    result = store.bulk_regenerate_user_api_keys(["alice", "bob"])
+
+    assert len(result["regenerated"]) == 2
+    assert len(result["errors"]) == 0
+
+    alice_result = next(r for r in result["regenerated"] if r["username"] == "alice")
+    bob_result = next(r for r in result["regenerated"] if r["username"] == "bob")
+
+    assert alice_result["api_key"] != "alice-old"
+    assert bob_result["api_key"] != "bob-old"
+
+    assert store.authenticate_user(alice_result["api_key"]) == "alice"
+    assert store.authenticate_user(bob_result["api_key"]) == "bob"
+
+    with pytest.raises(HTTPException):
+        store.authenticate_user("alice-old")
+    with pytest.raises(HTTPException):
+        store.authenticate_user("bob-old")
+
+
+def test_bulk_regenerate_user_api_keys_skips_unknown_users(tmp_path):
+    path = tmp_path / "api_keys.json"
+    path.write_text(json.dumps({"users": {"alice": {"api_key": "alice-old"}}}))
+    store = TenantStore(str(path))
+    store.load()
+
+    result = store.bulk_regenerate_user_api_keys(["alice", "bob"])
+
+    assert len(result["regenerated"]) == 1
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["username"] == "bob"
+    assert result["errors"][0]["error"] == "User not found"

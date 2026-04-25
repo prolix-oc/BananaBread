@@ -75,6 +75,9 @@ class ManagementConfigUpdate(BaseModel):
 class ManagementLoginRequest(BaseModel):
     key: str
 
+class BulkRegenerateRequest(BaseModel):
+    usernames: List[str]
+
 # ----- Ollama Compatible Schemas -----
 
 class OllamaMessage(BaseModel):

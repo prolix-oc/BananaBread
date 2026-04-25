@@ -23,7 +23,7 @@ from bananabread.schemas import (
     LlamaCppEmbeddingRequest, LlamaCppEmbeddingResponse,
     HFModelDownloadRequest, HFModelDownloadResponse,
     CreateUserRequest, CreateUserResponse, ManagementConfigUpdate,
-    ManagementLoginRequest,
+    ManagementLoginRequest, BulkRegenerateRequest,
 )
 from bananabread.cache import (
     UserScopedCache, CUDACacheManager,
@@ -345,6 +345,15 @@ async def update_management_config(request: ManagementConfigUpdate, api_key: str
 async def create_user_endpoint(request: CreateUserRequest, api_key: str = Depends(get_management_key)):
     limits = request.limits.model_dump() if request.limits else None
     return tenant_store.create_user(request.username, tier=request.tier, limits=limits)
+
+@app.post("/v1/management/users/{username}/regenerate")
+async def regenerate_user_key_endpoint(username: str, api_key: str = Depends(get_management_key)):
+    new_key = tenant_store.regenerate_user_api_key(username)
+    return {"username": username, "api_key": new_key}
+
+@app.post("/v1/management/users/regenerate")
+async def bulk_regenerate_user_keys_endpoint(request: BulkRegenerateRequest, api_key: str = Depends(get_management_key)):
+    return tenant_store.bulk_regenerate_user_api_keys(request.usernames)
 
 @app.post("/v1/rerank")
 async def rerank_endpoint(request: RerankRequest, auth: dict = Depends(get_api_user)):

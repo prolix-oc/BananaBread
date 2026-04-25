@@ -111,6 +111,36 @@ class TenantStore:
             self._rebuild_key_index()
             self._save_locked()
 
+    def regenerate_user_api_key(self, username: str) -> str:
+        with self.lock:
+            users = self.data.get("users", {})
+            if username not in users:
+                raise HTTPException(status_code=404, detail=f"User not found: {username}")
+            new_key = secrets.token_hex(24)
+            users[username]["api_key"] = new_key
+            self._rebuild_key_index()
+            self._save_locked()
+            return new_key
+
+    def bulk_regenerate_user_api_keys(self, usernames: list[str]) -> dict[str, Any]:
+        results = []
+        errors = []
+        with self.lock:
+            users = self.data.get("users", {})
+            for username in usernames:
+                username = username.strip()
+                if not username:
+                    continue
+                if username not in users:
+                    errors.append({"username": username, "error": "User not found"})
+                    continue
+                new_key = secrets.token_hex(24)
+                users[username]["api_key"] = new_key
+                results.append({"username": username, "api_key": new_key})
+            self._rebuild_key_index()
+            self._save_locked()
+        return {"regenerated": results, "errors": errors}
+
     def create_user(
         self,
         username: str,

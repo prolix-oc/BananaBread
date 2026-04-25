@@ -120,7 +120,10 @@ ADMIN_PANEL_HTML = """<!doctype html>
       </div>
 
       <div class="card wide">
-        <h2>Users</h2>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h2 style="margin:0;">Users</h2>
+          <button class="secondary" id="regenerateAllBtn" style="margin-top:0;">Regenerate All</button>
+        </div>
         <div id="users" class="users"><p>Loading...</p></div>
       </div>
     </section>
@@ -186,8 +189,22 @@ ADMIN_PANEL_HTML = """<!doctype html>
         const weekly = user.usage?.weekly;
         const node = document.createElement('div');
         node.className = 'user';
-        node.innerHTML = `<div><strong>${name}</strong><div class="meta">key ${user.api_key_preview || 'none'} · tier ${user.tier || 'none'} · daily ${daily?.tokens ?? 0}/${user.effective_limits.daily ?? '∞'} · weekly ${weekly?.tokens ?? 0}/${user.effective_limits.weekly ?? '∞'}</div></div><code>${user.api_key_preview || ''}</code>`;
+        node.innerHTML = `<div><strong>${name}</strong><div class="meta">key ${user.api_key_preview || 'none'} · tier ${user.tier || 'none'} · daily ${daily?.tokens ?? 0}/${user.effective_limits.daily ?? '∞'} · weekly ${weekly?.tokens ?? 0}/${user.effective_limits.weekly ?? '∞'}</div></div><div style="display:flex;gap:8px;align-items:center;"><code>${user.api_key_preview || ''}</code><button class="secondary regenerate-btn" data-user="${name}" style="margin-top:0;padding:6px 12px;font-size:.8rem;">Regenerate</button></div>`;
         $('users').appendChild(node);
+      });
+
+      document.querySelectorAll('.regenerate-btn').forEach((btn) => {
+        btn.onclick = async () => {
+          const user = btn.dataset.user;
+          if (!confirm(`Regenerate API key for ${user}? The old key will stop working immediately.`)) return;
+          try {
+            const result = await api(`/v1/management/users/${encodeURIComponent(user)}/regenerate`, { method: 'POST' });
+            setStatus(`Regenerated key for ${result.username}.`);
+            $('createdKey').hidden = false;
+            $('createdKey').textContent = `Regenerated ${result.username}\nNew API key: ${result.api_key}`;
+            await loadConfig();
+          } catch (error) { setStatus(error.message, false); }
+        };
       });
     }
 
@@ -252,6 +269,29 @@ ADMIN_PANEL_HTML = """<!doctype html>
         $('username').value = '';
         $('userDaily').value = '';
         $('userWeekly').value = '';
+        await loadConfig();
+      } catch (error) { setStatus(error.message, false); }
+    };
+
+    $('regenerateAllBtn').onclick = async () => {
+      if (!currentConfig) return;
+      const users = Object.keys(currentConfig.users || {});
+      if (!users.length) { setStatus('No users to regenerate.', false); return; }
+      if (!confirm(`Regenerate API keys for all ${users.length} user(s)? The old keys will stop working immediately.`)) return;
+      try {
+        const result = await api('/v1/management/users/regenerate', {
+          method: 'POST',
+          body: JSON.stringify({ usernames: users })
+        });
+        const okCount = result.regenerated?.length || 0;
+        const errCount = result.errors?.length || 0;
+        let msg = `Regenerated ${okCount} key(s).`;
+        if (errCount) msg += ` ${errCount} failed.`;
+        setStatus(msg);
+        if (okCount) {
+          $('createdKey').hidden = false;
+          $('createdKey').textContent = result.regenerated.map((r) => `${r.username}: ${r.api_key}`).join('\n');
+        }
         await loadConfig();
       } catch (error) { setStatus(error.message, false); }
     };

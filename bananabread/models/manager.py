@@ -19,6 +19,32 @@ embedding_model_name = ""
 # Lazy-loaded classifier
 classifier = None
 
+# Pre-computed calibration embeddings for stable int8 quantization
+calibration_embeddings = None
+
+_CALIBRATION_TEXTS = [
+    "This is a short sentence.",
+    "Machine learning is a subset of artificial intelligence that enables systems to learn from data.",
+    "The quick brown fox jumps over the lazy dog.",
+    "In 1492, Christopher Columbus sailed across the Atlantic Ocean and reached the Americas.",
+    "Photosynthesis is the process by which plants convert light energy into chemical energy.",
+    "Python is a high-level programming language known for its readability and versatility.",
+    "The capital of France is Paris, a city renowned for its art, culture, and cuisine.",
+    "Quantum mechanics describes the behavior of matter and energy at the smallest scales.",
+    "A healthy diet includes a variety of fruits, vegetables, whole grains, and lean proteins.",
+    "The Great Wall of China is one of the most impressive architectural feats in human history.",
+    "Climate change refers to long-term shifts in temperatures and weather patterns around the world.",
+    "Shakespeare wrote many famous plays, including Hamlet, Macbeth, and Romeo and Juliet.",
+    "The human brain contains approximately 86 billion neurons that communicate through synapses.",
+    "Artificial neural networks are inspired by the structure and function of biological brains.",
+    "Water boils at 100 degrees Celsius at standard atmospheric pressure.",
+    "The Internet has revolutionized communication, commerce, and access to information globally.",
+    "Einstein's theory of relativity fundamentally changed our understanding of space and time.",
+    "Regular exercise is essential for maintaining physical health and mental well-being.",
+    "The Mona Lisa is a portrait painted by Leonardo da Vinci in the early 16th century.",
+    "Cryptocurrencies like Bitcoin use blockchain technology to maintain decentralized ledgers.",
+]
+
 # ----- Model Pool for Concurrent GPU Execution -----
 
 class ModelPool:
@@ -451,8 +477,39 @@ def initialize_models():
             warmup_model(model, 'rerank', f"{reranking_model_choice}-{i+1}", num_samples=args.warmup_samples)
     elif rerank_model and not use_shared_qwen_pool and rerank_model != embedding_model:
         warmup_model(rerank_model, 'rerank', f"Rerank-{reranking_model_choice}", num_samples=args.warmup_samples)
-    
+
+    # Pre-compute calibration embeddings for stable int8 quantization
+    if args.quant == 'int8':
+        if embedding_model is not None:
+            _compute_calibration_embeddings(embedding_model)
+        elif embedding_model_pool is not None:
+            _compute_calibration_embeddings(embedding_model_pool.get_model())
+
     logger.info("Models initialized successfully")
+
+def _compute_calibration_embeddings(model):
+    """Generate calibration embeddings for stable int8 quantization ranges."""
+    global calibration_embeddings
+    logger.info("🔧 Computing int8 calibration embeddings from dummy texts...")
+    try:
+        if hasattr(model, 'encode'):
+            emb = model.encode(_CALIBRATION_TEXTS)
+        elif hasattr(model, 'get_embeddings'):
+            emb = model.get_embeddings(_CALIBRATION_TEXTS)
+        else:
+            logger.warning("⚠️  Could not compute calibration embeddings: model has no encode/get_embeddings method")
+            return
+
+        # Convert torch tensors to numpy float32
+        if hasattr(emb, 'cpu'):
+            if emb.dtype == torch.bfloat16:
+                emb = emb.to(torch.float32)
+            emb = emb.cpu().numpy()
+
+        calibration_embeddings = emb
+        logger.info(f"✅ Computed {len(_CALIBRATION_TEXTS)} calibration embeddings for int8 quantization")
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to compute calibration embeddings: {e}")
 
 def get_classifier():
     """Lazy-load the classification pipeline on first use"""

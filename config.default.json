@@ -4,6 +4,7 @@
     "qwen_size": "0.6B",
     "qwen_backend": "torch",
     "qwen_compute_dtype": "bfloat16",
+    "matmul_cast_fp16": false,
     "qwen_onnx_model_path": null,
     "qwen_onnx_provider": "CPUExecutionProvider",
     "qwen_max_length": 8192,

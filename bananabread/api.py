@@ -450,7 +450,10 @@ async def embedding_endpoint(request: EmbeddingRequest, auth: dict = Depends(get
     # Quantization
     if args.quant != 'standard':
         def quantize_embeddings_wrapper(embeddings):
-            return quantize_embeddings(embeddings, precision=args.quant)
+            kwargs = {"precision": args.quant}
+            if args.quant == "int8" and models_manager.calibration_embeddings is not None:
+                kwargs["calibration_embeddings"] = models_manager.calibration_embeddings
+            return quantize_embeddings(embeddings, **kwargs)
 
         docs_embeddings = await run_in_threadpool_with_executor(
             embedding_executor,

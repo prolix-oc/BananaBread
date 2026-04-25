@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import List
 
@@ -6,7 +7,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
-from bananabread.config import logger
+from bananabread.config import args, logger
 
 
 def _check_flash_attention_available() -> tuple[bool, str]:
@@ -230,6 +231,18 @@ class QwenBnbModel(QwenTorchModel):
         self.backend_name = f"torch-bnb-{quantization_bits}bit"
         self.device_arg = device_arg
         self.compute_dtype = _torch_dtype(compute_dtype)
+
+        # Handle matmul_cast_fp16 config for 8-bit quantization
+        if quantization_bits == 8:
+            if args.matmul_cast_fp16:
+                self.compute_dtype = torch.float16
+            else:
+                # Suppress the bitsandbytes cast warning when keeping bfloat16/fp32
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"MatMul8bitLt: inputs will be cast from .* to float16 during quantization",
+                    category=UserWarning,
+                )
 
         try:
             from transformers import BitsAndBytesConfig

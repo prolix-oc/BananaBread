@@ -48,17 +48,21 @@ def setup_pretty_logging(level=logging.INFO):
     # Create console handler with custom formatter
     console_handler = logging.StreamHandler()
     console_handler.setLevel(level)
-    
+
     # Create formatter
     formatter = ColoredFormatter(
         fmt='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
         datefmt='%H:%M:%S'
     )
     console_handler.setFormatter(formatter)
-    
+
     # Add handler to root logger
     logging.root.addHandler(console_handler)
     logging.root.setLevel(level)
+
+    # Suppress noisy third-party network loggers (httpx, etc.) that flood the console
+    for noisy in ("httpx", "httpcore", "urllib3", "requests"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 # Setup pretty logging initially (will be updated after args parse)
 setup_pretty_logging()
@@ -176,6 +180,7 @@ DEFAULTS = {
     "general_threads": None,
     "reranking_model": None,
     "qwen_flash_attention": False,
+    "matmul_cast_fp16": False,
     "enable_torch_compile": False,
     "enable_warmup": True,
     "cuda_cache_ttl_enabled": False,
@@ -404,6 +409,8 @@ def parse_args():
                        help=f"Maximum token length for Qwen embedding inputs (default: {DEFAULTS['qwen_max_length']})")
     parser.add_argument("--qwen-flash-attention", action='store_true', default=DEFAULTS.get("qwen_flash_attention"),
                        help="Enable flash_attention_2 for Qwen models (requires compatible GPU)")
+    parser.add_argument("--matmul-cast-fp16", action='store_true', default=DEFAULTS.get("matmul_cast_fp16"),
+                       help="Cast compute dtype to float16 during bitsandbytes 8-bit quantization instead of keeping bfloat16 (default: False)")
     parser.add_argument("--model-storage-dir", type=str, default=DEFAULTS["model_storage_dir"],
                        help=f"Directory for explicitly downloaded model snapshots (default: {DEFAULTS['model_storage_dir']})")
     parser.add_argument("--hf-model-slug", type=str, default=DEFAULTS.get("hf_model_slug"),

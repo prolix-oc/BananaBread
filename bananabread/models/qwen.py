@@ -293,23 +293,33 @@ class QwenOnnxModel(BaseQwenModel):
         super().__init__(model_name, max_length=max_length)
 
         resolved_model_path = self._resolve_onnx_path(model_path)
+        session_options = ort.SessionOptions()
+        session_options.optimized_model_filepath = str(self._optimized_onnx_path(resolved_model_path))
         available_providers = ort.get_available_providers()
         providers = [provider] if provider in available_providers else ["CPUExecutionProvider"]
         if provider not in available_providers:
             logger.warning(f"ONNX provider {provider} is unavailable. Falling back to CPUExecutionProvider")
 
-        self.session = ort.InferenceSession(str(resolved_model_path), providers=providers)
+        self.session = ort.InferenceSession(str(resolved_model_path), sess_options=session_options, providers=providers)
         self.input_names = [input_meta.name for input_meta in self.session.get_inputs()]
         self.device = providers[0]
         logger.info(f"Qwen ONNX model initialized with provider={providers[0]}")
 
     @staticmethod
     def _resolve_onnx_path(model_path: str) -> Path:
-        path = Path(model_path)
+        path = Path(model_path).expanduser()
         if path.is_file():
             return path
         if not path.exists():
-            raise FileNotFoundError(f"ONNX model path does not exist: {model_path}")
+            if path.suffix.lower() == ".onnx":
+                path.parent.mkdir(parents=True, exist_ok=True)
+                raise FileNotFoundError(
+                    f"ONNX model file does not exist: {path}. Created parent directory if needed."
+                )
+            path.mkdir(parents=True, exist_ok=True)
+            raise FileNotFoundError(
+                f"No .onnx model found in directory: {path}. Created directory if needed."
+            )
         candidates = sorted(path.glob("*.onnx"))
         if not candidates:
             raise FileNotFoundError(f"No .onnx model found in directory: {model_path}")
@@ -318,6 +328,12 @@ class QwenOnnxModel(BaseQwenModel):
             if preferred.exists():
                 return preferred
         return candidates[0]
+
+    @staticmethod
+    def _optimized_onnx_path(model_path: Path) -> Path:
+        optimized_dir = model_path.parent / "optimized"
+        optimized_dir.mkdir(parents=True, exist_ok=True)
+        return optimized_dir / model_path.name
 
     @staticmethod
     def last_token_pool(last_hidden_states: np.ndarray, attention_mask: np.ndarray) -> np.ndarray:

@@ -6,6 +6,7 @@ import argparse
 import multiprocessing
 import subprocess
 import random
+from pathlib import Path
 import torch
 from typing import Dict, Any
 from transformers import set_seed
@@ -177,38 +178,123 @@ DEFAULTS = {
     "log_embeddings": False
 }
 
-def create_default_config() -> Dict[str, Any]:
+CONFIG_CHOICES = {
+    "embedding_model": {"mixedbread", "qwen"},
+    "reranking_model": {"mixedbread", "qwen", None},
+    "qwen_size": {"0.6B", "4B", "8B"},
+    "qwen_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit", "onnx-int8"},
+    "qwen_compute_dtype": {"bfloat16", "float16", "float32"},
+    "quant": {"standard", "ubinary", "int8"},
+    "log_level": {"DEBUG", "INFO", "WARNING", "ERROR"},
+}
+
+
+def resolve_config_path(config_path: str | None = None) -> Path:
+    """Resolve the config path from CLI/env/default without depending on import cwd."""
+    requested = config_path or os.environ.get("BANANABREAD_CONFIG") or CONFIG_FILE
+    path = Path(requested).expanduser()
+    if path.is_absolute():
+        return path
+    return Path.cwd() / path
+
+
+def normalize_config(config: Dict[str, Any], source: Path) -> Dict[str, Any]:
+    """Normalize config keys and ignore invalid null/unknown values before argparse uses them."""
+    normalized = {}
+    valid_keys = set(DEFAULTS)
+
+    for raw_key, value in config.items():
+        key = raw_key.replace("-", "_")
+        if key not in valid_keys:
+            logger.warning(f"⚠️  Ignoring unknown config key in {source}: {raw_key}")
+            continue
+        if value is None and DEFAULTS[key] is not None:
+            logger.warning(f"⚠️  Ignoring null config value for '{key}' in {source}; using default {DEFAULTS[key]!r}")
+            continue
+        normalized[key] = value
+
+    return normalized
+
+def create_default_config(config_path: Path) -> Dict[str, Any]:
     """Create default config.json file on first startup"""
     # Only include non-None defaults that users would want to customize
     config_defaults = {k: v for k, v in DEFAULTS.items() if v is not None}
     try:
-        with open(CONFIG_FILE, 'w') as f:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, 'w') as f:
             json.dump(config_defaults, f, indent=4)
-        logger.info(f"📝 Created default configuration file: {CONFIG_FILE}")
+        logger.info(f"📝 Created default configuration file: {config_path}")
         return config_defaults
     except Exception as e:
         logger.warning(f"⚠️  Failed to create config file: {e}")
         return {}
 
-def load_config() -> Dict[str, Any]:
+def load_config(config_path: Path) -> Dict[str, Any]:
     """Load configuration from JSON file, creating default if it doesn't exist"""
-    if os.path.exists(CONFIG_FILE):
+    if config_path.exists():
         try:
-            with open(CONFIG_FILE, 'r') as f:
+            with open(config_path, 'r') as f:
                 config = json.load(f)
-                logger.info(f"📄 Loaded configuration from {CONFIG_FILE}")
-                return config
+                if not isinstance(config, dict):
+                    logger.warning(f"⚠️  Config file must contain a JSON object: {config_path}")
+                    return {}
+                logger.info(f"📄 Loaded configuration from {config_path}")
+                return normalize_config(config, config_path)
         except Exception as e:
-            logger.warning(f"⚠️  Failed to load config file: {e}")
+            logger.warning(f"⚠️  Failed to load config file {config_path}: {e}")
             return {}
     else:
-        return create_default_config()
+        return create_default_config(config_path)
+
+
+def validate_args(parsed_args):
+    """Validate config-derived values because argparse choices do not validate defaults."""
+    for key, choices in CONFIG_CHOICES.items():
+        value = getattr(parsed_args, key, None)
+        if value not in choices:
+            logger.warning(f"⚠️  Invalid value for '{key}': {value!r}. Using default {DEFAULTS[key]!r}")
+            setattr(parsed_args, key, DEFAULTS[key])
+
+    for key in ("embedding_device", "rerank_device"):
+        value = getattr(parsed_args, key, None)
+        if not isinstance(value, str) or not value.strip():
+            logger.warning(f"⚠️  Invalid value for '{key}': {value!r}. Using default {DEFAULTS[key]!r}")
+            setattr(parsed_args, key, DEFAULTS[key])
+        else:
+            setattr(parsed_args, key, value.strip().lower())
+
+    active_qwen_devices = []
+    reranking_model = parsed_args.reranking_model
+    if reranking_model is None and parsed_args.embedding_model == "qwen":
+        reranking_model = "qwen"
+    if parsed_args.embedding_model == "qwen":
+        active_qwen_devices.append(parsed_args.embedding_device)
+    if reranking_model == "qwen":
+        active_qwen_devices.append(parsed_args.rerank_device)
+    if parsed_args.qwen_backend.startswith("torch-bnb") and any(device == "cpu" for device in active_qwen_devices):
+        logger.warning(
+            "⚠️  qwen_backend uses bitsandbytes, but at least one active Qwen device is CPU. "
+            "Falling back to qwen_backend='torch' instead of attempting CUDA quantized loading."
+        )
+        parsed_args.qwen_backend = "torch"
+
+    if not getattr(parsed_args, "enable_warmup", True):
+        parsed_args.disable_warmup = True
+    if getattr(parsed_args, "disable_warmup", False):
+        parsed_args.enable_warmup = False
+
+    return parsed_args
 
 CPU_INFO = get_cpu_info()
 AVAILABLE_SOCKETS = get_available_cores()
 TOTAL_PHYSICAL_CORES = multiprocessing.cpu_count()
 
 def parse_args():
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", type=str, default=os.environ.get("BANANABREAD_CONFIG", CONFIG_FILE))
+    pre_args, _ = pre_parser.parse_known_args()
+    config_path = resolve_config_path(pre_args.config)
+
     parser = argparse.ArgumentParser(
         description="BananaBread-Emb - Optimized MixedBread AI Server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -219,6 +305,8 @@ def parse_args():
       python server.py --embedding-device cuda --rerank-device cuda
         """
     )
+    parser.add_argument("--config", type=str, default=str(config_path),
+                       help=f"Path to config JSON file (default: {CONFIG_FILE}, or BANANABREAD_CONFIG)")
 
     # CPU and core selection arguments
     parser.add_argument("--use-cores", type=int, default=DEFAULTS.get("use_cores"), 
@@ -320,13 +408,14 @@ def parse_args():
                         help="Random seed for reproducibility. Set to -1 for random seed. (default: 42)")
 
     # Load configuration and apply to parser defaults
-    config = load_config()
+    config = load_config(config_path)
     if config:
         parser.set_defaults(**config)
         logger.info("⚙️  Applied configuration defaults from file")
 
     args, _ = parser.parse_known_args()
-    return args
+    args.config = str(resolve_config_path(args.config))
+    return validate_args(args)
 
 # Global args instance
 args = parse_args()

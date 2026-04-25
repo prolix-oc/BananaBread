@@ -120,12 +120,21 @@ uv run bananabread-emb --embedding-model qwen --reranking-model mixedbread
 
 ### Config file
 
-BananaBread creates a `config.json` on first run. You can also copy `config.default.json` to `config.json` and edit it. The keys use the same names as the flags (with underscores instead of dashes). Command-line flags override config file values.
+BananaBread creates a `config.json` in the current working directory on first run. You can also copy `config.default.json` to `config.json` and edit it. The keys use the same names as the flags (with underscores instead of dashes). Hyphenated keys are also accepted and normalized. Command-line flags override config file values.
+
+If your launcher starts BananaBread from a different working directory, pass the config path explicitly:
+
+```bash
+uv run bananabread-emb --config /path/to/config.json
+```
+
+You can also set `BANANABREAD_CONFIG=/path/to/config.json`.
 
 All available options (grouped by purpose):
 
 | Option | Default | Description |
 |---|---|---|
+| `config` | `"config.json"` | Path to the config JSON file, or set `BANANABREAD_CONFIG` |
 | **Model selection** | | |
 | `embedding_model` | `"mixedbread"` | `"mixedbread"` or `"qwen"` |
 | `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, or `null` (auto: matches embedding model) |
@@ -193,23 +202,23 @@ Flash Attention 2 makes GPU inference faster and uses less memory. It's optional
 
 **Requires:** NVIDIA GPU with compute capability 7.5+ (RTX 2000 series or newer).
 
-#### Installing with uv (recommended)
+#### Installing a prebuilt wheel
 
-If you're running from the cloned repo, uv will automatically download a precompiled wheel for your platform:
-
-```bash
-uv run --extra flash-attn bananabread-emb --embedding-model qwen --qwen-flash-attention --embedding-device cuda
-```
-
-#### Installing without uv
-
-If you're using pip, **do not** run `pip install flash-attn` on Windows — it will try to compile from source and almost certainly fail. Use the included helper script instead:
+Use the helper script to install only the precompiled wheel for your current platform and Python version:
 
 ```bash
-python install_flash_attn.py
+uv run python install_flash_attn.py
 ```
 
-The script detects your platform, Python version, and PyTorch setup, then installs the right precompiled wheel. Run `python install_flash_attn.py --dry-run` to preview what it would do.
+Preview what it would install:
+
+```bash
+uv run python install_flash_attn.py --dry-run
+```
+
+The script detects your platform, Python version, and PyTorch setup, then installs the right precompiled wheel. This avoids declaring every platform wheel in `pyproject.toml`, which can make uv download multiple large Flash Attention wheels while resolving the project.
+
+If you're using pip outside uv, run `python install_flash_attn.py` from the cloned repo. **Do not** run `pip install flash-attn` on Windows; it will try to compile from source and almost certainly fail.
 
 You can also install a wheel directly:
 
@@ -226,6 +235,8 @@ Once installed, enable it:
 ```bash
 uv run bananabread-emb --embedding-model qwen --qwen-flash-attention --embedding-device cuda
 ```
+
+At startup, BananaBread only enables Flash Attention 2 when `flash_attn` imports in the same Python environment, Transformers reports FA2 support, CUDA is available, the target device is not CPU, and Qwen compute dtype is `float16` or `bfloat16`. If any check fails, BananaBread logs the reason and falls back to the default attention implementation.
 
 ### Qwen CUDA quantization
 
@@ -381,13 +392,7 @@ BananaBread is designed to impersonate other servers. It responds to model listi
 `pip install flash-attn` tries to compile from source on Windows and will usually fail. Use the helper script instead:
 
 ```bash
-python install_flash_attn.py
-```
-
-Or install with `uv`, which automatically pulls precompiled wheels:
-
-```bash
-uv run --extra flash-attn bananabread-emb
+uv run python install_flash_attn.py
 ```
 
 See [Flash Attention 2](#flash-attention-2) for more details.

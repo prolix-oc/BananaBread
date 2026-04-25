@@ -64,6 +64,15 @@ def check_torch():
         return None, None
 
 
+def verify_flash_attn_import():
+    cmd = [
+        sys.executable,
+        "-c",
+        "import flash_attn; print('flash_attn import verified')",
+    ]
+    return subprocess.run(cmd)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Install a precompiled Flash Attention 2 wheel for your platform.",
@@ -151,8 +160,15 @@ def main():
     result = subprocess.run(cmd)
 
     if result.returncode == 0:
-        print("\nFlash Attention 2 installed successfully!")
-        print("Enable it with: --qwen-flash-attention")
+        print("\nFlash Attention 2 installed. Verifying import...")
+        verify_result = verify_flash_attn_import()
+        if verify_result.returncode == 0:
+            print("\nFlash Attention 2 installed and import-verified successfully!")
+            print("Enable it with: --qwen-flash-attention")
+        else:
+            print("\nInstallation completed, but flash_attn failed to import in this environment.")
+            print("The wheel may not match your Python, PyTorch, CUDA, or platform runtime.")
+            sys.exit(verify_result.returncode)
     else:
         print(f"\nInstallation failed (exit code {result.returncode}).")
         print("You can try manually:")

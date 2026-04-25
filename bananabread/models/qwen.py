@@ -9,28 +9,35 @@ from transformers import AutoModel, AutoTokenizer
 from bananabread.config import logger
 
 
-def _check_flash_attention_available() -> bool:
-    """Check if Flash Attention 2 is installed and usable."""
+def _check_flash_attention_available() -> tuple[bool, str]:
+    """Check whether Flash Attention 2 is installed and usable by Transformers."""
     try:
         import flash_attn  # noqa: F401
-        return True
     except ImportError:
-        return False
+        return False, "flash_attn is not installed in this Python environment"
     except Exception as e:
         import sys
 
         if sys.platform == 'win32':
-            logger.warning(
-                f"Flash Attention 2 failed to load on Windows: {e}. "
-                "Ensure you installed using 'uv' (not pip) so the precompiled wheel is used, "
-                "or install the wheel manually. See README for details."
+            return False, (
+                f"flash_attn failed to import on Windows: {e}. "
+                "Run `uv run python install_flash_attn.py` from the repo to install "
+                "a matching precompiled wheel, or install a wheel manually (see README)."
             )
-        else:
-            logger.warning(f"Flash Attention 2 failed to load: {e}")
-        return False
+        return False, f"flash_attn failed to import: {e}"
+
+    try:
+        from transformers.utils import is_flash_attn_2_available
+    except ImportError:
+        return True, "flash_attn imports, but this Transformers version cannot validate FA2 availability"
+
+    if not is_flash_attn_2_available():
+        return False, "Transformers reports Flash Attention 2 is unavailable for this runtime"
+
+    return True, "available"
 
 
-FLASH_ATTENTION_AVAILABLE = _check_flash_attention_available()
+FLASH_ATTENTION_AVAILABLE, FLASH_ATTENTION_STATUS = _check_flash_attention_available()
 
 
 def _torch_dtype(dtype_name: str) -> torch.dtype:
@@ -111,7 +118,7 @@ class QwenTorchModel(BaseQwenModel):
         logger.info(f"Loading Qwen torch model: {model_name}")
         super().__init__(model_name, max_length=max_length)
 
-        kwargs = self._attention_kwargs(use_flash_attention, device_arg)
+        kwargs = self._attention_kwargs(use_flash_attention, device_arg, self.compute_dtype)
         device_map = self._device_map(device_arg)
 
         if device_map:
@@ -136,33 +143,31 @@ class QwenTorchModel(BaseQwenModel):
         logger.info(f"Qwen torch model initialized on {self.device} with padding_side='left'")
 
     @staticmethod
-    def _attention_kwargs(use_flash_attention: bool, device_arg: str) -> dict:
+    def _attention_kwargs(use_flash_attention: bool, device_arg: str, compute_dtype: torch.dtype = torch.bfloat16) -> dict:
         kwargs = {}
         if use_flash_attention:
+            if device_arg.lower() == "cpu":
+                logger.warning("Flash Attention 2 requested for CPU. Falling back to default attention implementation.")
+                return kwargs
+            if not torch.cuda.is_available():
+                logger.warning("Flash Attention 2 requested, but CUDA is not available. Falling back to default attention implementation.")
+                return kwargs
+            if compute_dtype not in (torch.float16, torch.bfloat16):
+                logger.warning("Flash Attention 2 requires float16 or bfloat16 compute. Falling back to default attention implementation.")
+                return kwargs
             if FLASH_ATTENTION_AVAILABLE:
                 kwargs["attn_implementation"] = "flash_attention_2"
                 logger.info("Flash Attention 2 enabled for Qwen model")
             else:
-                import sys
-
-                if sys.platform == 'win32':
-                    logger.warning(
-                        "Flash Attention 2 requested but not installed. "
-                        "Falling back to default attention implementation. "
-                        "On Windows, you MUST use 'uv' to install (not pip) so precompiled wheels are used: "
-                        "uv pip install bananabread-emb[flash-attn] -- "
-                        "Or install the wheel manually (see README)."
-                    )
-                else:
-                    logger.warning(
-                        "Flash Attention 2 requested but not installed. "
-                        "Falling back to default attention implementation. "
-                        "To enable Flash Attention 2, install the extras: uv pip install bananabread-emb[flash-attn]"
-                    )
+                logger.warning(
+                    "Flash Attention 2 requested but unavailable. "
+                    f"Reason: {FLASH_ATTENTION_STATUS}. "
+                    "Falling back to default attention implementation."
+                )
         elif device_arg.lower() != "cpu" and not FLASH_ATTENTION_AVAILABLE:
             logger.info(
                 "Flash Attention 2 is not installed. For improved GPU performance with Qwen models, "
-                "consider installing: uv pip install bananabread-emb[flash-attn]"
+                f"consider running: uv run python install_flash_attn.py. Detection reason: {FLASH_ATTENTION_STATUS}"
             )
         return kwargs
 
@@ -237,7 +242,7 @@ class QwenBnbModel(QwenTorchModel):
         logger.info(f"Loading Qwen {quantization_bits}-bit bitsandbytes model: {model_name}")
         BaseQwenModel.__init__(self, model_name, max_length=max_length)
 
-        kwargs = self._attention_kwargs(use_flash_attention, device_arg)
+        kwargs = self._attention_kwargs(use_flash_attention, device_arg, self.compute_dtype)
         device_map = "auto" if device_arg.lower() in ["auto", "cuda"] else {"": device_arg}
 
         if quantization_bits == 8:

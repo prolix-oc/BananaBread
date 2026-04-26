@@ -207,15 +207,24 @@ def get_management_key(request: Request, authorization: str = Header(None)):
 
     raise HTTPException(status_code=401, detail="Management authentication required")
 
-def get_embedding_tokenizer():
+def get_embedding_model_for_token_count():
     model = models_manager.embedding_model
     if model is None and models_manager.embedding_model_pool:
         models = models_manager.embedding_model_pool.get_all_models()
         model = models[0] if models else None
-    return getattr(model, "tokenizer", None)
+    return model
+
+def get_embedding_tokenizer():
+    return getattr(get_embedding_model_for_token_count(), "tokenizer", None)
 
 def count_usage_tokens(texts: List[str]) -> int:
-    return count_text_tokens(texts, get_embedding_tokenizer())
+    model = get_embedding_model_for_token_count()
+    tokenizer = getattr(model, "tokenizer", None)
+    tokenizer_lock = getattr(model, "tokenizer_lock", None)
+    if tokenizer_lock is None:
+        return count_text_tokens(texts, tokenizer)
+    with tokenizer_lock:
+        return count_text_tokens(texts, tokenizer)
 
 def consume_user_tokens(username: str, texts: List[str]) -> int:
     tokens = count_usage_tokens(texts)

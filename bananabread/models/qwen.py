@@ -1,4 +1,5 @@
 import sys
+import threading
 import warnings
 from pathlib import Path
 from typing import List
@@ -69,12 +70,25 @@ class BaseQwenModel:
         self.model_name = model_name
         self.max_length = max_length
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
+        self.tokenizer_lock = threading.RLock()
 
     def get_detailed_instruct(self, task_description: str, query: str) -> str:
         return f'Instruct: {task_description}\nQuery:{query}'
 
     def encode(self, sentences: List[str], prompt_name: str = None, batch_size: int = 8, **kwargs):
         return self.get_embeddings(sentences, batch_size=batch_size)
+
+    def tokenize(self, batch: List[str], return_tensors: str):
+        # Fast tokenizers mutate truncation/padding state during __call__ and can
+        # raise "Already borrowed" if shared across concurrent requests.
+        with self.tokenizer_lock:
+            return self.tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                return_tensors=return_tensors,
+                max_length=self.max_length,
+            )
 
     def rank(self, query: str, documents: list[str], return_documents: bool = False, top_k: int = None, task_description: str = None) -> dict:
         task = task_description if task_description else 'Given a web search query, retrieve relevant passages that answer the query'
@@ -194,13 +208,7 @@ class QwenTorchModel(BaseQwenModel):
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            inputs = self.tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-                max_length=self.max_length,
-            ).to(self.model.device)
+            inputs = self.tokenize(batch, return_tensors="pt").to(self.model.device)
 
             with torch.inference_mode():
                 outputs = self.model(**inputs)
@@ -392,13 +400,7 @@ class QwenOnnxModel(BaseQwenModel):
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            encoded = self.tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                return_tensors="np",
-                max_length=self.max_length,
-            )
+            encoded = self.tokenize(batch, return_tensors="np")
             attention_mask = encoded["attention_mask"]
             outputs = self.session.run(None, self._prepare_onnx_inputs(encoded))
             last_hidden_state = outputs[0]

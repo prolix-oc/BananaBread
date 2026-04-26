@@ -383,9 +383,10 @@ def get_rerank_cache_key(query: str, documents: list[str], top_k: int, return_do
         m.update(task_description.encode("utf-8"))
     return m.hexdigest()
 
-def get_embedding_cache_key(input_data: list[str], encoding_format: str = "float") -> str:
+def get_embedding_cache_key(input_data: list[str], encoding_format: str = "float", quantization: str = "standard") -> str:
     m = hashlib.sha256()
     for item in input_data:
         m.update(item.encode("utf-8"))
     m.update(encoding_format.encode("utf-8"))
+    m.update(quantization.encode("utf-8"))
     return m.hexdigest()

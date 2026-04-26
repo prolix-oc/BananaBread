@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi import HTTPException
 
-from bananabread.cache import LimitedCache, UserScopedCache
+from bananabread.cache import LimitedCache, UserScopedCache, get_embedding_cache_key
 from bananabread.tenancy import TenantStore, count_text_tokens
 
 
@@ -410,3 +410,38 @@ def test_bulk_regenerate_user_api_keys_skips_unknown_users(tmp_path):
     assert len(result["errors"]) == 1
     assert result["errors"][0]["username"] == "bob"
     assert result["errors"][0]["error"] == "User not found"
+
+
+# ----- Cache Key Tests -----
+
+
+def test_embedding_cache_key_includes_quantization():
+    """Different quantization settings must produce different cache keys."""
+    base_key = get_embedding_cache_key(["hello world"], "float", "standard")
+    int8_key = get_embedding_cache_key(["hello world"], "float", "int8")
+    ubinary_key = get_embedding_cache_key(["hello world"], "float", "ubinary")
+
+    assert base_key != int8_key
+    assert base_key != ubinary_key
+    assert int8_key != ubinary_key
+
+
+def test_embedding_cache_key_changes_with_input():
+    """Different input text must produce different cache keys."""
+    key1 = get_embedding_cache_key(["hello world"], "float", "standard")
+    key2 = get_embedding_cache_key(["hello universe"], "float", "standard")
+    assert key1 != key2
+
+
+def test_embedding_cache_key_changes_with_encoding_format():
+    """Different encoding formats must produce different cache keys."""
+    key1 = get_embedding_cache_key(["hello world"], "float", "standard")
+    key2 = get_embedding_cache_key(["hello world"], "base64", "standard")
+    assert key1 != key2
+
+
+def test_embedding_cache_key_stable_for_same_arguments():
+    """Identical arguments must produce identical cache keys."""
+    key1 = get_embedding_cache_key(["hello world"], "float", "standard")
+    key2 = get_embedding_cache_key(["hello world"], "float", "standard")
+    assert key1 == key2

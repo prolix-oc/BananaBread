@@ -465,7 +465,7 @@ async def embedding_endpoint(
 
     logger.info(f"📄 Processing {len(inputs)} documents for embeddings (format: {request.encoding_format})")
 
-    key = get_embedding_cache_key(inputs, request.encoding_format) if inputs else ""
+    key = get_embedding_cache_key(inputs, request.encoding_format, args.quant) if inputs else ""
     cached = embedding_cache.get(auth["username"], key)
     if cached is not None:
         cached_result = deepcopy(cached)

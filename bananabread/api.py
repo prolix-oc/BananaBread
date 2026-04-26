@@ -1,5 +1,4 @@
 import threading
-import asyncio
 import base64
 import torch
 import numpy as np
@@ -30,7 +29,6 @@ from bananabread.cache import (
     get_rerank_cache_key, get_embedding_cache_key,
 )
 from bananabread.utils import (
-    CustomProgressTracker, 
     log_embedding_result,
     run_in_threadpool_with_executor,
     get_process_memory_usage,
@@ -444,57 +442,11 @@ async def embedding_endpoint(request: EmbeddingRequest, auth: dict = Depends(get
         else:
             return model.encode(inputs)
     
-    # Batch processing logic
-    if len(inputs) > 10:
-        progress_tracker = CustomProgressTracker(len(inputs), "Embedding")
-        progress_tracker.start()
-        chunk_size = max(1, len(inputs) // 10)
-        
-        tasks = []
-        async def process_chunk(chunk, start_idx):
-            result = await run_in_threadpool_with_executor(
-                embedding_executor,
-                get_embedding_model_and_encode,
-                chunk
-            )
-            return start_idx, result, len(chunk)
-
-        for i in range(0, len(inputs), chunk_size):
-            chunk = inputs[i:i + chunk_size]
-            tasks.append(process_chunk(chunk, i))
-        
-        results_unsorted = []
-        completed_count = 0
-        
-        for task in asyncio.as_completed(tasks):
-            idx, res, count = await task
-            results_unsorted.append((idx, res))
-            completed_count += count
-            progress_tracker.update(completed_count)
-            
-        results_unsorted.sort(key=lambda x: x[0])
-        all_embeddings = [r[1] for r in results_unsorted]
-        
-        processed_chunks = []
-        for chunk in all_embeddings:
-            if hasattr(chunk, 'cpu'):
-                # Convert BFloat16 to Float32 before numpy conversion (numpy doesn't support bf16)
-                if chunk.dtype == torch.bfloat16:
-                    chunk = chunk.to(torch.float32)
-                processed_chunks.append(chunk.cpu().numpy())
-            elif isinstance(chunk, list):
-                processed_chunks.append(np.array(chunk))
-            else:
-                processed_chunks.append(chunk)
-                
-        docs_embeddings = np.concatenate(processed_chunks, axis=0)
-        progress_tracker.finish()
-    else:
-        docs_embeddings = await run_in_threadpool_with_executor(
-            embedding_executor,
-            get_embedding_model_and_encode,
-            inputs
-        )
+    docs_embeddings = await run_in_threadpool_with_executor(
+        embedding_executor,
+        get_embedding_model_and_encode,
+        inputs
+    )
     
     if hasattr(docs_embeddings, 'cpu'):
         # Convert BFloat16 to Float32 before numpy conversion / quantization
@@ -719,22 +671,11 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest, auth: d
                 model = models_manager.embedding_model
             return model.encode(inputs)
         
-        # Reuse batch logic or simple execute
-        # (Simplified for brevity vs original server.py, but logic remains)
-        if len(inputs) > 10:
-             # ... (Chunking logic similar to embedding_endpoint, omit repeated verbose code for now, or implement fully)
-             # Implementing simple execution for now to match logic flow.
-             docs_embeddings = await run_in_threadpool_with_executor(
-                embedding_executor,
-                get_embedding_model_and_encode,
-                inputs
-            )
-        else:
-            docs_embeddings = await run_in_threadpool_with_executor(
-                embedding_executor,
-                get_embedding_model_and_encode,
-                inputs
-            )
+        docs_embeddings = await run_in_threadpool_with_executor(
+            embedding_executor,
+            get_embedding_model_and_encode,
+            inputs
+        )
         
         # Processing vectors logic
         def process_vector(vec, normalize=True):

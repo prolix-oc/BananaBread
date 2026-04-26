@@ -273,6 +273,8 @@ uv run bananabread-emb --embedding-model qwen --qwen-flash-attention --embedding
 
 At startup, BananaBread only enables Flash Attention 2 when `flash_attn` imports in the same Python environment, Transformers reports FA2 support, CUDA is available, the target device is not CPU, and Qwen compute dtype is `float16` or `bfloat16`. If any check fails, BananaBread logs the reason and falls back to the default attention implementation.
 
+> **Windows + bitsandbytes users:** Flash Attention 2 is automatically disabled when using `torch-bnb-8bit` or `torch-bnb-4bit` on Windows because the combination triggers a known CUDA compatibility issue (`torch.AcceleratorError: CUDA error: unknown error`). BananaBread falls back to SDPA attention automatically.
+
 ### Qwen CUDA quantization
 
 Qwen supports optional bitsandbytes weight quantization on CUDA. This reduces model VRAM usage; it is separate from `quant`, which quantizes the returned embedding vectors.

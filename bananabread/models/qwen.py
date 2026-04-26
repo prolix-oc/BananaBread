@@ -1,3 +1,4 @@
+import sys
 import warnings
 from pathlib import Path
 from typing import List
@@ -251,6 +252,17 @@ class QwenBnbModel(QwenTorchModel):
                 "bitsandbytes quantization requires the cuda-quant extra: "
                 "uv pip install bananabread-emb[cuda-quant]"
             ) from exc
+
+        # Flash Attention 2 + bitsandbytes on Windows is known to cause
+        # torch.AcceleratorError: CUDA error: unknown error during inference.
+        # Force SDPA fallback on Windows when BnB quantization is active.
+        if sys.platform == 'win32' and use_flash_attention:
+            logger.warning(
+                "Flash Attention 2 is disabled for bitsandbytes backends on Windows "
+                "to avoid a known CUDA compatibility issue (torch.AcceleratorError). "
+                "Falling back to sdpa attention."
+            )
+            use_flash_attention = False
 
         logger.info(f"Loading Qwen {quantization_bits}-bit bitsandbytes model: {model_name}")
         BaseQwenModel.__init__(self, model_name, max_length=max_length)

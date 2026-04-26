@@ -354,6 +354,50 @@ def test_bulk_regenerate_user_api_keys_regenerates_multiple_users(tmp_path):
         store.authenticate_user("bob-old")
 
 
+def test_check_and_consume_debounces_disk_writes(tmp_path):
+    """Usage updates should not hit the disk on every call.
+
+    The background flusher persists dirty usage counters on an interval.
+    Consuming tokens twice in rapid succession should leave the file at its
+    post-load state until either the flusher runs or ``close()`` is called.
+    """
+    path = tmp_path / "api_keys.json"
+    path.write_text(json.dumps({"users": {"alice": {"api_key": "alice-key"}}}))
+    # Large interval so the flusher never runs during the test window.
+    store = TenantStore(str(path), usage_save_interval=60.0)
+    store.load()
+    try:
+        store.check_and_consume("alice", 3)
+        store.check_and_consume("alice", 2)
+
+        on_disk = json.loads(path.read_text())
+        # Disk still reflects zero usage — writes are debounced.
+        assert on_disk["users"]["alice"]["usage"]["daily"]["tokens"] == 0
+        # Memory reflects the consumed tokens.
+        assert store.data["users"]["alice"]["usage"]["daily"]["tokens"] == 5
+
+        # close() flushes the pending state.
+        store.close()
+        on_disk = json.loads(path.read_text())
+        assert on_disk["users"]["alice"]["usage"]["daily"]["tokens"] == 5
+    finally:
+        store.close()
+
+
+def test_check_and_consume_sync_mode_writes_immediately(tmp_path):
+    """Setting ``usage_save_interval=0`` restores the original sync write path."""
+    path = tmp_path / "api_keys.json"
+    path.write_text(json.dumps({"users": {"alice": {"api_key": "alice-key"}}}))
+    store = TenantStore(str(path), usage_save_interval=0)
+    store.load()
+    try:
+        store.check_and_consume("alice", 3)
+        on_disk = json.loads(path.read_text())
+        assert on_disk["users"]["alice"]["usage"]["daily"]["tokens"] == 3
+    finally:
+        store.close()
+
+
 def test_bulk_regenerate_user_api_keys_skips_unknown_users(tmp_path):
     path = tmp_path / "api_keys.json"
     path.write_text(json.dumps({"users": {"alice": {"api_key": "alice-old"}}}))

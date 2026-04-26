@@ -1,4 +1,5 @@
 import threading
+import time
 import base64
 import torch
 import numpy as np
@@ -7,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Header, Depends, Request
+from fastapi import FastAPI, HTTPException, Header, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, RedirectResponse
 from sentence_transformers.quantization import quantize_embeddings
@@ -102,6 +103,14 @@ embedding_executor = ThreadPoolExecutor(max_workers=EMBEDDING_THREADS, thread_na
 rerank_executor = ThreadPoolExecutor(max_workers=RERANK_THREADS, thread_name_prefix="rerank")
 classification_executor = ThreadPoolExecutor(max_workers=CLASSIFICATION_THREADS, thread_name_prefix="classification")
 general_executor = ThreadPoolExecutor(max_workers=GENERAL_THREADS, thread_name_prefix="general")
+
+# Separate executor for embedding quantization. Quantization is CPU-bound
+# (numpy) and must not contend with the embedding_executor, or the
+# quantization pass can queue behind another request's GPU encode and appear
+# to clients as a post-inference hang.
+QUANT_THREADS = max(2, CPU_COUNT // 4)
+quant_executor = ThreadPoolExecutor(max_workers=QUANT_THREADS, thread_name_prefix="quant")
+logger.info(f"  - Quantization threads: {QUANT_THREADS}")
 
 # ----- Caches -----
 
@@ -354,20 +363,25 @@ async def bulk_regenerate_user_keys_endpoint(request: BulkRegenerateRequest, api
     return tenant_store.bulk_regenerate_user_api_keys(request.usernames)
 
 @app.post("/v1/rerank")
-async def rerank_endpoint(request: RerankRequest, auth: dict = Depends(get_api_user)):
+async def rerank_endpoint(
+    request: RerankRequest,
+    background_tasks: BackgroundTasks,
+    auth: dict = Depends(get_api_user),
+):
     if not request.query or not request.documents:
         raise HTTPException(status_code=400, detail="Query or documents must be provided")
 
+    t_start = time.perf_counter()
     consume_user_tokens(auth["username"], [request.query, *request.documents])
-    
+
     key = get_rerank_cache_key(request.query, request.documents, request.top_k, request.return_documents, request.task_description)
     cached = rerank_cache.get(auth["username"], key)
     if cached is not None:
         return cached
-    
+
     # Mark inference activity for CUDA cache manager
     cuda_cache_manager.mark_inference_activity()
-    
+
     # Get reranker model
     def get_rerank_model_and_rank(query, documents, return_documents, top_k, task_description):
         """Get model from pool and perform ranking"""
@@ -376,16 +390,17 @@ async def rerank_endpoint(request: RerankRequest, auth: dict = Depends(get_api_u
             model = models_manager.rerank_model_pool.get_model()
         else:
             model = models_manager.rerank_model
-        
+
         try:
             return model.rank(query, documents, return_documents=return_documents, top_k=top_k, task_description=task_description)
         except TypeError:
             # Fallback for models that don't support task_description
             return model.rank(query, documents, return_documents=return_documents, top_k=top_k)
-    
+
+    t_rank = time.perf_counter()
     # Use dedicated rerank threadpool
     result = await run_in_threadpool_with_executor(
-        rerank_executor, 
+        rerank_executor,
         get_rerank_model_and_rank,
         request.query,
         request.documents,
@@ -393,17 +408,36 @@ async def rerank_endpoint(request: RerankRequest, auth: dict = Depends(get_api_u
         request.top_k,
         request.task_description
     )
-    
+    rank_s = time.perf_counter() - t_rank
+
     # Clear CUDA cache immediately after inference if using GPU
     if torch.cuda.is_available() and (args.rerank_device.startswith('cuda') or args.rerank_device == 'mps'):
         torch.cuda.empty_cache()
         logger.debug("Cleared CUDA cache after reranking")
-    
-    rerank_cache.set(auth["username"], key, result)
+
+    # Defer cache insertion until after the response is sent (see embeddings
+    # endpoint for rationale).
+    background_tasks.add_task(rerank_cache.set, auth["username"], key, result)
+
+    logger.info(
+        f"⏱ rerank docs={len(request.documents)} rank={rank_s:.3f}s "
+        f"total={time.perf_counter()-t_start:.3f}s"
+    )
     return result
 
 @app.post("/v1/embeddings")
-async def embedding_endpoint(request: EmbeddingRequest, auth: dict = Depends(get_api_user)):
+async def embedding_endpoint(
+    request: EmbeddingRequest,
+    background_tasks: BackgroundTasks,
+    auth: dict = Depends(get_api_user),
+):
+    # ---- timing instrumentation ----
+    # Use perf_counter throughout so we can diff between the inference finishing
+    # and the response actually being sent. If the client is timing out *after*
+    # the batch is processed, the gap between `t_inference_done` and `return`
+    # is what we care about.
+    t_start = time.perf_counter()
+
     # Handle inputs
     if isinstance(request.input, str):
         inputs = [request.input]
@@ -419,35 +453,35 @@ async def embedding_endpoint(request: EmbeddingRequest, auth: dict = Depends(get
     if not inputs:
         raise HTTPException(status_code=400, detail="Input must be provided")
     prompt_tokens = consume_user_tokens(auth["username"], inputs)
-    
+
     logger.info(f"📄 Processing {len(inputs)} documents for embeddings (format: {request.encoding_format})")
-    
+
     key = get_embedding_cache_key(inputs, request.encoding_format) if inputs else ""
     cached = embedding_cache.get(auth["username"], key)
     if cached is not None:
         cached_result = deepcopy(cached)
         cached_result["usage"] = {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens}
+        logger.info(f"⏱ embed cache-hit total={time.perf_counter()-t_start:.3f}s n={len(inputs)}")
         return cached_result
-    
+
     cuda_cache_manager.mark_inference_activity()
-    
+
     def get_embedding_model_and_encode(inputs):
         if models_manager.embedding_model_pool:
             model = models_manager.embedding_model_pool.get_model()
         else:
             model = models_manager.embedding_model
-        
-        if args.embedding_model == 'qwen':
-            return model.encode(inputs)
-        else:
-            return model.encode(inputs)
-    
+        return model.encode(inputs)
+
+    t_encode = time.perf_counter()
     docs_embeddings = await run_in_threadpool_with_executor(
         embedding_executor,
         get_embedding_model_and_encode,
         inputs
     )
-    
+    encode_s = time.perf_counter() - t_encode
+
+    t_post = time.perf_counter()
     if hasattr(docs_embeddings, 'cpu'):
         # Convert BFloat16 to Float32 before numpy conversion / quantization
         # (numpy and sentence_transformers quantize_embeddings don't support bf16)
@@ -456,6 +490,7 @@ async def embedding_endpoint(request: EmbeddingRequest, auth: dict = Depends(get
         docs_embeddings = docs_embeddings.cpu()
 
     # Quantization
+    quant_s = 0.0
     if args.quant != 'standard':
         def quantize_embeddings_wrapper(embeddings):
             kwargs = {"precision": args.quant}
@@ -463,11 +498,13 @@ async def embedding_endpoint(request: EmbeddingRequest, auth: dict = Depends(get
                 kwargs["calibration_embeddings"] = models_manager.calibration_embeddings
             return quantize_embeddings(embeddings, **kwargs)
 
+        t_quant = time.perf_counter()
         docs_embeddings = await run_in_threadpool_with_executor(
-            embedding_executor,
+            quant_executor,
             quantize_embeddings_wrapper,
             docs_embeddings
         )
+        quant_s = time.perf_counter() - t_quant
         logger.debug(f"Applied {args.quant} quantization to embeddings")
 
     # Encoding
@@ -482,22 +519,11 @@ async def embedding_endpoint(request: EmbeddingRequest, auth: dict = Depends(get
             embeddings_list.append(emb_b64)
     else:
         embeddings_list = docs_embeddings.tolist()
-    
+
     if torch.cuda.is_available() and (args.embedding_device.startswith('cuda') or args.embedding_device == 'mps'):
         torch.cuda.empty_cache()
         logger.debug("Cleared CUDA cache after embedding")
-    
-    log_data = embeddings_list if request.encoding_format != "base64" else ["<base64_encoded_data>"] * len(embeddings_list)
-    log_embedding_result(
-        inputs=inputs,
-        embeddings=log_data,
-        metadata={
-            "model": models_manager.embedding_model_name,
-            "quantization": args.quant,
-            "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'hf'} else "native"
-        }
-    )
-    
+
     data = []
     for idx, emb in enumerate(embeddings_list):
         data.append({
@@ -505,14 +531,37 @@ async def embedding_endpoint(request: EmbeddingRequest, auth: dict = Depends(get
             "embedding": emb,
             "index": idx
         })
-    
+
     result = {
         "object": "list",
         "data": data,
         "model": models_manager.embedding_model_name,
         "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens}
     }
-    embedding_cache.set(auth["username"], key, result)
+    post_s = time.perf_counter() - t_post
+
+    # Defer disk logging and cache insertion until *after* the response is
+    # flushed to the client. Previously both ran synchronously on the event
+    # loop after inference completed, which is what made clients time out
+    # even though the batch had already been processed.
+    log_data = embeddings_list if request.encoding_format != "base64" else ["<base64_encoded_data>"] * len(embeddings_list)
+    background_tasks.add_task(
+        log_embedding_result,
+        inputs,
+        log_data,
+        {
+            "model": models_manager.embedding_model_name,
+            "quantization": args.quant,
+            "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'hf'} else "native",
+        },
+    )
+    background_tasks.add_task(embedding_cache.set, auth["username"], key, result)
+
+    total_s = time.perf_counter() - t_start
+    logger.info(
+        f"⏱ embed n={len(inputs)} encode={encode_s:.3f}s "
+        f"quant={quant_s:.3f}s post={post_s:.3f}s total={total_s:.3f}s"
+    )
     return result
 
 @app.post("/v1/classify")
@@ -844,7 +893,8 @@ def cleanup_resources():
             logger.error(f"Error during CUDA cache manager cleanup: {e}")
         
         # Shutdown executors
-        for name, executor in [("embedding", embedding_executor), ("rerank", rerank_executor), 
+        for name, executor in [("embedding", embedding_executor), ("rerank", rerank_executor),
+                               ("quant", quant_executor),
                                ("classification", classification_executor), ("general", general_executor)]:
             try:
                 logger.info(f"Shutting down {name} executor...")
@@ -857,6 +907,11 @@ def cleanup_resources():
             embedding_cache.clear()
         except Exception:
             pass
-        
+
+        try:
+            tenant_store.close()
+        except Exception as e:
+            logger.error(f"Error closing tenant store: {e}")
+
         cleanup_completed = True
         logger.info("✅ Graceful shutdown completed")

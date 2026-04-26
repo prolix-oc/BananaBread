@@ -203,21 +203,46 @@ class CUDACacheManager:
 
 def get_cache_size(obj):
     """
-    Recursively estimate the size in bytes of a Python object.
-    This is a rough approximation.
+    Fast structural size estimate in bytes.
+
+    Previously this walked every element of nested lists/dicts recursively,
+    which for an OpenAI-shaped embeddings response (thousands of 1024-dim
+    float lists) meant millions of sys.getsizeof() calls on the event loop
+    thread — easily seconds of stall per request. The eviction path called
+    it a second time per evicted value.
+
+    This version short-circuits on the common cached-response shape:
+      {"object": "list", "data": [{"embedding": [...], ...}, ...], ...}
+    and falls back to a bounded shallow walk for anything else. Accuracy
+    only needs to be within an order of magnitude for eviction to behave
+    sensibly, since ``cache_limit_bytes`` is a soft target.
     """
-    seen_ids = set()
-    def inner(obj):
-        if id(obj) in seen_ids:
-            return 0
-        seen_ids.add(id(obj))
+    # Fast path: OpenAI embeddings response
+    if isinstance(obj, dict):
+        data = obj.get("data")
+        if isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, dict) and "embedding" in first:
+                emb = first["embedding"]
+                if isinstance(emb, list):
+                    # Python float ~ 24 bytes; list overhead ~ 56 + 8/elem
+                    dim = len(emb)
+                    per_row = 56 + dim * (8 + 24)
+                    return len(data) * (per_row + 200)  # 200 for dict/object overhead
+                if isinstance(emb, (bytes, str)):
+                    # base64 / bytes path
+                    return len(data) * (len(emb) + 256)
+
+    # Fallback: bounded shallow estimate (no deep recursion over floats)
+    try:
         size = sys.getsizeof(obj)
         if isinstance(obj, dict):
-            size += sum(inner(k) + inner(v) for k, v in obj.items())
+            size += sum(sys.getsizeof(k) + sys.getsizeof(v) for k, v in obj.items())
         elif isinstance(obj, (list, tuple, set)):
-            size += sum(inner(i) for i in obj)
+            size += sys.getsizeof(obj[0]) * len(obj) if obj else 0
         return size
-    return inner(obj)
+    except Exception:
+        return 1024  # harmless default
 
 class LimitedCache(OrderedDict):
     def __init__(self, cache_limit_bytes, *args, **kwargs):

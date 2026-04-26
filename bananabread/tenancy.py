@@ -20,11 +20,27 @@ DEFAULT_CACHE_CONFIG = {
 
 
 class TenantStore:
-    def __init__(self, path: str = "./api_keys.json"):
+    def __init__(
+        self,
+        path: str = "./api_keys.json",
+        usage_save_interval: float = 5.0,
+    ):
         self.path = Path(path)
         self.lock = threading.Lock()
         self.data: dict[str, Any] = {}
         self.key_to_user: dict[str, str] = {}
+
+        # Debounced usage persistence. Admin mutations (create_user, key
+        # rotation, config updates) still flush synchronously — durability of
+        # *identity* state matters. Usage counters are incremented in-memory
+        # on every request and flushed at most once every
+        # ``usage_save_interval`` seconds by a background daemon thread. This
+        # removes a synchronous tmp-file-rename from the hot embedding /
+        # rerank paths.
+        self._usage_save_interval = max(0.0, usage_save_interval)
+        self._usage_dirty = False
+        self._flusher_stop = threading.Event()
+        self._flusher_thread: threading.Thread | None = None
 
     def load(self) -> None:
         with self.lock:
@@ -37,6 +53,9 @@ class TenantStore:
             self.data = self._normalize(raw)
             self._rebuild_key_index()
             self._save_locked()
+            self._usage_dirty = False
+
+        self._start_flusher()
 
     def _normalize(self, raw: dict[str, Any]) -> dict[str, Any]:
         if "users" in raw or "management_key" in raw:
@@ -88,6 +107,51 @@ class TenantStore:
         with tmp_path.open("w") as f:
             json.dump(self.data, f, indent=4)
         os.replace(tmp_path, self.path)
+        self._usage_dirty = False
+
+    def _start_flusher(self) -> None:
+        """Start the background usage-flush thread (idempotent)."""
+        if self._usage_save_interval <= 0:
+            return
+        if self._flusher_thread is not None and self._flusher_thread.is_alive():
+            return
+        self._flusher_stop.clear()
+        thread = threading.Thread(
+            target=self._flusher_loop,
+            name="tenant-usage-flusher",
+            daemon=True,
+        )
+        self._flusher_thread = thread
+        thread.start()
+
+    def _flusher_loop(self) -> None:
+        while not self._flusher_stop.wait(timeout=self._usage_save_interval):
+            self._flush_usage_if_dirty()
+        # Final flush on shutdown signal.
+        self._flush_usage_if_dirty()
+
+    def _flush_usage_if_dirty(self) -> None:
+        # Take the lock only if there's actually something to write so idle
+        # servers don't contend with request handlers.
+        if not self._usage_dirty:
+            return
+        with self.lock:
+            if not self._usage_dirty:
+                return
+            try:
+                self._save_locked()
+            except Exception:
+                # Swallow — next tick will retry. Don't crash the daemon
+                # over a transient disk error.
+                pass
+
+    def close(self) -> None:
+        """Flush any dirty usage state and stop the background thread."""
+        self._flusher_stop.set()
+        thread = self._flusher_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5.0)
+        self._flush_usage_if_dirty()
 
     def authenticate_user(self, api_key: str) -> str:
         with self.lock:
@@ -285,7 +349,14 @@ class TenantStore:
 
             usage["daily"]["tokens"] += tokens
             usage["weekly"]["tokens"] += tokens
-            self._save_locked()
+            # Mark the file as dirty instead of writing synchronously. The
+            # background flusher thread will persist it shortly. If the
+            # flusher is disabled (``usage_save_interval <= 0``), fall back
+            # to the original synchronous write for durability parity.
+            if self._usage_save_interval > 0:
+                self._usage_dirty = True
+            else:
+                self._save_locked()
             return {
                 "tokens": tokens,
                 "limits": limits,

@@ -156,6 +156,18 @@ curl -X POST http://localhost:8008/v1/embeddings \
 
 Nemotron requires NVIDIA's custom bidirectional-Llama implementation, so this dedicated model selector enables `trust_remote_code` only for NVIDIA's fixed model repository. Review the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/) before use.
 
+For lower VRAM use, the dedicated CUDA bitsandbytes backends quantize the model weights (separate from the response-vector `quant` option):
+
+```bash
+# 8-bit weights
+uv run --extra cuda-quant bananabread-emb --embedding-model nemotron --nemotron-backend torch-bnb-8bit --embedding-device cuda --reranking-model none
+
+# 4-bit NF4 weights with BF16 compute
+uv run --extra cuda-quant bananabread-emb --embedding-model nemotron --nemotron-backend torch-bnb-4bit --nemotron-compute-dtype bfloat16 --embedding-device cuda --reranking-model none
+```
+
+Nemotron defaults to embedding-only mode; use `--reranking-model mixedbread` only when you need reranking too. For any model, `--reranking-model none` disables reranking. The `/v1/rerank` endpoint then returns HTTP 503 instead of loading a reranker. Nemotron also serializes requests that share one model instance to avoid the Hugging Face fast-tokenizer `RuntimeError: Already borrowed`; use `num_concurrent_embedding` greater than one on CUDA to load independent model instances when you need parallel inference.
+
 ### Using a Hugging Face embedding model
 
 You can run a SentenceTransformers or embedding-capable Hugging Face model by slug. BananaBread resolves and validates the Hub metadata, downloads the snapshot into `model_storage_dir`, then loads the local snapshot with SentenceTransformers:
@@ -191,10 +203,12 @@ All available options (grouped by purpose):
 | `config` | `"config.json"` | Path to the config JSON file, or set `BANANABREAD_CONFIG` |
 | **Model selection** | | |
 | `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, `"nemotron"`, or `"hf"` |
-| `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, or `null` (auto: matches embedding model) |
+| `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, `"none"`, or `null` (auto: Qwen uses Qwen, Nemotron is disabled, otherwise MixedBread) |
 | `qwen_size` | `"0.6B"` | Qwen model size: `"0.6B"`, `"4B"`, or `"8B"` |
 | `qwen_backend` | `"torch"` | Qwen runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, or `"onnx-int8"` |
 | `qwen_compute_dtype` | `"bfloat16"` | Compute dtype for torch Qwen backends: `"bfloat16"`, `"float16"`, or `"float32"` |
+| `nemotron_backend` | `"torch"` | Nemotron runtime: `"torch"`, `"torch-bnb-8bit"`, or `"torch-bnb-4bit"` |
+| `nemotron_compute_dtype` | `"bfloat16"` | Compute dtype for Nemotron torch backends |
 | `qwen_onnx_model_path` | `null` | Local `.onnx` file or directory for `qwen_backend="onnx-int8"` |
 | `qwen_onnx_provider` | `"CPUExecutionProvider"` | ONNX Runtime execution provider |
 | `qwen_max_length` | `8192` | Maximum token length for Qwen embedding inputs |

@@ -377,6 +377,8 @@ async def rerank_endpoint(
     background_tasks: BackgroundTasks,
     auth: dict = Depends(get_api_user),
 ):
+    if models_manager.rerank_model is None and models_manager.rerank_model_pool is None:
+        raise HTTPException(status_code=503, detail="Reranking is disabled")
     if not request.query or not request.documents:
         raise HTTPException(status_code=400, detail="Query or documents must be provided")
 
@@ -854,6 +856,19 @@ async def model(api_key: str = Depends(get_api_user)):
 
 @app.get("/", name="BananaBread-Emb Works")
 async def read_root():
+    endpoints = {
+        "embeddings": "/v1/embeddings",
+        "classify": "/v1/classify",
+        "management_panel": "/management",
+        "management_config": "/v1/management/config",
+        "create_user": "/v1/management/users",
+        "download_model": "/v1/models/download",
+        "memory": "/v1/memory",
+        "health": "/v1/health",
+        "models": "/v1/models",
+    }
+    if models_manager.rerank_model is not None or models_manager.rerank_model_pool is not None:
+        endpoints["rerank"] = "/v1/rerank"
     return {
         "message": "🍞 BananaBread-Emb is running with optimized CPU utilization!",
         "cpu_cores": CPU_COUNT,
@@ -864,18 +879,7 @@ async def read_root():
         "embedding_model_name": models_manager.embedding_model_name,
         "embedding_quantization": args.quant,
         "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'nemotron', 'hf'} else "native",
-        "endpoints": {
-            "embeddings": "/v1/embeddings",
-            "rerank": "/v1/rerank", 
-            "classify": "/v1/classify",
-            "management_panel": "/management",
-            "management_config": "/v1/management/config",
-            "create_user": "/v1/management/users",
-            "download_model": "/v1/models/download",
-            "memory": "/v1/memory",
-            "health": "/v1/health",
-            "models": "/v1/models"
-        }
+        "endpoints": endpoints,
     }
 
 # ----- Cleanup Helper -----

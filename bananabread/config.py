@@ -163,6 +163,8 @@ DEFAULTS = {
     "qwen_size": "0.6B",
     "qwen_backend": "torch",
     "qwen_compute_dtype": "bfloat16",
+    "nemotron_backend": "torch",
+    "nemotron_compute_dtype": "bfloat16",
     "qwen_onnx_model_path": None,
     "qwen_onnx_provider": "CPUExecutionProvider",
     "qwen_max_length": 8192,
@@ -191,10 +193,12 @@ DEFAULTS = {
 
 CONFIG_CHOICES = {
     "embedding_model": {"mixedbread", "qwen", "nemotron", "hf"},
-    "reranking_model": {"mixedbread", "qwen", None},
+    "reranking_model": {"mixedbread", "qwen", "none", None},
     "qwen_size": {"0.6B", "4B", "8B"},
     "qwen_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit", "onnx-int8"},
     "qwen_compute_dtype": {"bfloat16", "float16", "float32"},
+    "nemotron_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit"},
+    "nemotron_compute_dtype": {"bfloat16", "float16", "float32"},
     "quant": {"standard", "ubinary", "int8"},
     "log_level": {"DEBUG", "INFO", "WARNING", "ERROR"},
 }
@@ -288,6 +292,19 @@ def validate_args(parsed_args):
             "Falling back to qwen_backend='torch' instead of attempting CUDA quantized loading."
         )
         parsed_args.qwen_backend = "torch"
+
+    nemotron_device = parsed_args.embedding_device
+    if (
+        parsed_args.embedding_model == "nemotron"
+        and parsed_args.nemotron_backend.startswith("torch-bnb")
+        and nemotron_device != "auto"
+        and not nemotron_device.startswith("cuda")
+    ):
+        logger.warning(
+            "⚠️  nemotron_backend uses bitsandbytes, but the embedding device is not CUDA. "
+            "Falling back to nemotron_backend='torch'."
+        )
+        parsed_args.nemotron_backend = "torch"
 
     if not getattr(parsed_args, "enable_warmup", True):
         parsed_args.disable_warmup = True
@@ -401,6 +418,10 @@ def parse_args():
                        help=f"Qwen runtime backend (default: {DEFAULTS['qwen_backend']})")
     parser.add_argument("--qwen-compute-dtype", type=str, choices=['bfloat16', 'float16', 'float32'], default=DEFAULTS["qwen_compute_dtype"],
                        help=f"Compute dtype for torch Qwen backends (default: {DEFAULTS['qwen_compute_dtype']})")
+    parser.add_argument("--nemotron-backend", type=str, choices=['torch', 'torch-bnb-8bit', 'torch-bnb-4bit'], default=DEFAULTS["nemotron_backend"],
+                       help=f"Nemotron runtime backend (default: {DEFAULTS['nemotron_backend']})")
+    parser.add_argument("--nemotron-compute-dtype", type=str, choices=['bfloat16', 'float16', 'float32'], default=DEFAULTS["nemotron_compute_dtype"],
+                       help=f"Compute dtype for Nemotron torch backends (default: {DEFAULTS['nemotron_compute_dtype']})")
     parser.add_argument("--qwen-onnx-model-path", type=str, default=DEFAULTS.get("qwen_onnx_model_path"),
                        help="Local ONNX model directory or .onnx file for --qwen-backend=onnx-int8")
     parser.add_argument("--qwen-onnx-provider", type=str, default=DEFAULTS["qwen_onnx_provider"],
@@ -421,8 +442,8 @@ def parse_args():
                        help="Hugging Face access token for private or gated models")
 
     # Reranking model selection arguments
-    parser.add_argument("--reranking-model", type=str, choices=['mixedbread', 'qwen'], default=DEFAULTS.get("reranking_model"),
-                       help="Reranking model to use (default: mixedbread, or qwen if --embedding-model=qwen)")
+    parser.add_argument("--reranking-model", type=str, choices=['mixedbread', 'qwen', 'none'], default=DEFAULTS.get("reranking_model"),
+                       help="Reranking model to use; set to 'none' to disable it (default: mixedbread, or qwen if --embedding-model=qwen)")
 
     # Determinism
     parser.add_argument("--seed", type=int, default=DEFAULTS["seed"],

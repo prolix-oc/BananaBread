@@ -296,6 +296,8 @@ def load_nemotron_embedding_model():
         local_path,
         truncate_dim=args.embedding_dim,
         device=args.embedding_device,
+        backend=args.nemotron_backend,
+        compute_dtype=args.nemotron_compute_dtype,
     )
 
 def load_embedding_model_instance():
@@ -343,8 +345,13 @@ def initialize_models():
         if args.embedding_model == 'qwen':
             reranking_model_choice = 'qwen'
             logger.info("No reranking model specified, using qwen (same as embedding model)")
+        elif args.embedding_model == 'nemotron':
+            reranking_model_choice = None
+            logger.info("No reranking model specified, leaving Nemotron in embedding-only mode")
         else:
             reranking_model_choice = 'mixedbread'
+    elif args.reranking_model == 'none':
+        reranking_model_choice = None
     else:
         reranking_model_choice = args.reranking_model
 
@@ -365,7 +372,10 @@ def initialize_models():
     elif args.embedding_model == 'hf':
         logger.info(f"Using Hugging Face model slug: {args.hf_model_slug}")
     elif args.embedding_model == 'nemotron':
-        logger.info(f"Using NVIDIA Nemotron model: {NEMOTRON_MODEL_REPO}")
+        logger.info(
+            f"Using NVIDIA Nemotron model: {NEMOTRON_MODEL_REPO} "
+            f"(backend={args.nemotron_backend})"
+        )
     
     shared_qwen_pool = None
     
@@ -437,7 +447,9 @@ def initialize_models():
         warmup_model(embedding_model, 'embedding', embedding_model_name, num_samples=args.warmup_samples)
 
     # ----- Rerank Model Init -----
-    logger.info(f"Using reranking model: {reranking_model_choice}")
+    logger.info(
+        f"Using reranking model: {reranking_model_choice if reranking_model_choice else 'disabled'}"
+    )
     
     if reranking_model_choice == 'qwen':
         if use_shared_qwen_pool:
@@ -483,9 +495,12 @@ def initialize_models():
                     max_length=args.qwen_max_length,
                 )
                 rerank_model_pool = None
-    else:
+    elif reranking_model_choice == 'mixedbread':
         # MixedBread
         rerank_model = MxbaiRerankV2("mixedbread-ai/mxbai-rerank-base-v2", device=args.rerank_device)
+        rerank_model_pool = None
+    else:
+        rerank_model = None
         rerank_model_pool = None
 
     # Apply compile to single rerank instance

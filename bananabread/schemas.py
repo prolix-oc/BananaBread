@@ -1,4 +1,4 @@
-from typing import Optional, List, Union, Dict, Any
+from typing import Optional, List, Union, Dict, Any, Literal
 from pydantic import BaseModel
 
 # ----- Request Schemas -----
@@ -16,6 +16,7 @@ class EmbeddingRequest(BaseModel):
     input: Union[str, List[str], List[int], List[List[int]]]
     encoding_format: str = "float" # float or base64
     user: Optional[str] = None
+    input_type: Literal["document", "query"] = "document"
 
 class ClassificationRequest(BaseModel):
     input: str

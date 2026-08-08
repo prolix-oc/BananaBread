@@ -12,6 +12,7 @@ BananaBread downloads a specialized model to your machine and runs a local serve
 | [MixedBread mxbai-embed-large-v1](https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1) | Embedding | Default. Lightweight, great on CPU. |
 | [MixedBread mxbai-rerank-base-v2](https://huggingface.co/mixedbread-ai/mxbai-rerank-base-v2) | Reranking | Default reranker. |
 | [Qwen3-Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | Embedding + Reranking | One model does both. Sizes: 0.6B, 4B, 8B. |
+| [NVIDIA Llama Nemotron Embed 1B v2](https://huggingface.co/nvidia/llama-nemotron-embed-1b-v2) | Embedding | Multilingual retrieval, 8K-token inputs, and Matryoshka dimensions (384–2048). |
 | [RoBERTa go_emotions](https://huggingface.co/SamLowe/roberta-base-go_emotions) | Classification | Emotion classification. Loaded on first use. |
 
 ---
@@ -129,6 +130,32 @@ uv run bananabread-emb --embedding-model qwen --reranking-model mixedbread
 
 `qwen_backend` controls how the model itself runs. `quant` controls the returned embedding vectors after inference. For example, `qwen_backend=onnx-int8` uses an INT8 ONNX model, while `quant=int8` returns scalar-int8 embedding vectors to clients.
 
+### Using NVIDIA Nemotron Embedding
+
+NVIDIA's Llama Nemotron Embed 1B v2 is a 2048-dimensional multilingual retrieval model with an 8192-token input limit. Start it with:
+
+```bash
+uv run bananabread-emb --embedding-model nemotron --embedding-device cuda --embedding-dim 2048
+```
+
+The model uses a distinct retrieval prompt for each side of a search. BananaBread applies `passage:` for the default `document` input type and `query:` when you set the BananaBread extension `input_type` to `query` on `POST /v1/embeddings`. Use the same `embedding_dim` for indexing and querying; supported Matryoshka sizes are 384, 512, 768, 1024, and 2048.
+
+```bash
+# Index a corpus document (the default input_type is document)
+curl -X POST http://localhost:8008/v1/embeddings \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"A summit is the highest point of a mountain.","input_type":"document"}'
+
+# Embed a search query
+curl -X POST http://localhost:8008/v1/embeddings \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"summit define","input_type":"query"}'
+```
+
+Nemotron requires NVIDIA's custom bidirectional-Llama implementation, so this dedicated model selector enables `trust_remote_code` only for NVIDIA's fixed model repository. Review the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/) before use.
+
 ### Using a Hugging Face embedding model
 
 You can run a SentenceTransformers or embedding-capable Hugging Face model by slug. BananaBread resolves and validates the Hub metadata, downloads the snapshot into `model_storage_dir`, then loads the local snapshot with SentenceTransformers:
@@ -163,7 +190,7 @@ All available options (grouped by purpose):
 |---|---|---|
 | `config` | `"config.json"` | Path to the config JSON file, or set `BANANABREAD_CONFIG` |
 | **Model selection** | | |
-| `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, or `"hf"` |
+| `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, `"nemotron"`, or `"hf"` |
 | `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, or `null` (auto: matches embedding model) |
 | `qwen_size` | `"0.6B"` | Qwen model size: `"0.6B"`, `"4B"`, or `"8B"` |
 | `qwen_backend` | `"torch"` | Qwen runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, or `"onnx-int8"` |
@@ -183,7 +210,7 @@ All available options (grouped by purpose):
 | **Embedding cache** | | |
 | `cache_limit` | `1024` | Max cache size in MB for each cache (embedding and rerank) |
 | `quant` | `"standard"` | Embedding quantization: `"standard"`, `"int8"`, or `"ubinary"` |
-| `embedding_dim` | `1024` | Embedding dimensions (MixedBread only, truncation) |
+| `embedding_dim` | `1024` | Output dimensions for MixedBread, Nemotron, and HF models (truncation where supported) |
 | **CPU / threading** | | |
 | `use_cores` | `null` | Limit to N CPU cores (`null` = use all) |
 | `cpu_socket` | `null` | Pin to a specific CPU socket (multi-socket systems) |
@@ -428,7 +455,7 @@ curl -X POST http://localhost:8008/v1/models/download \
   }'
 ```
 
-The downloader accepts `author` + `path`, a direct repo id in `path`, or standard selectors such as `{"model_name":"qwen","size":"0.6B"}`. It checks Hub metadata for SentenceTransformers or embedding capability before downloading unless `require_embedding_capable` is set to `false`.
+The downloader accepts `author` + `path`, a direct repo id in `path`, or standard selectors such as `{"model_name":"qwen","size":"0.6B"}` and `{"model_name":"nemotron"}`. It checks Hub metadata for SentenceTransformers or embedding capability before downloading unless `require_embedding_capable` is set to `false`.
 
 For private or gated models, pass `hf_access_token` in the request body or configure `hf_access_token`/`--hf-access-token` on the server. The token is used for Hub metadata and snapshot download calls and is not returned in the response.
 

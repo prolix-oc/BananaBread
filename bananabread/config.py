@@ -190,7 +190,7 @@ DEFAULTS = {
 }
 
 CONFIG_CHOICES = {
-    "embedding_model": {"mixedbread", "qwen", "hf"},
+    "embedding_model": {"mixedbread", "qwen", "nemotron", "hf"},
     "reranking_model": {"mixedbread", "qwen", None},
     "qwen_size": {"0.6B", "4B", "8B"},
     "qwen_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit", "onnx-int8"},
@@ -393,7 +393,7 @@ def parse_args():
                        help=f"Number of warmup inference samples to run (default: {DEFAULTS['warmup_samples']})")
 
     # Embedding model selection arguments
-    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'hf'], default=DEFAULTS["embedding_model"],
+    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'hf'], default=DEFAULTS["embedding_model"],
                        help=f"Embedding model to use (default: {DEFAULTS['embedding_model']})")
     parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default=DEFAULTS["qwen_size"],
                        help=f"Qwen model size to use when --embedding-model=qwen (default: {DEFAULTS['qwen_size']})")

@@ -7,6 +7,7 @@ from mxbai_rerank import MxbaiRerankV2
 
 from bananabread.config import logger, args
 from bananabread.hf_models import download_hf_model, inspect_hf_model, resolve_model_repo_id
+from bananabread.models.nemotron import NEMOTRON_MODEL_REPO, NemotronEmbeddingModel
 from bananabread.models.qwen import QwenRawModel, load_qwen_model
 
 # Global model references
@@ -282,6 +283,21 @@ def load_hf_embedding_model():
     logger.info(f"📦 Loaded Hugging Face embedding snapshot: {repo_id} -> {local_path}")
     return repo_id, SentenceTransformer(local_path, truncate_dim=args.embedding_dim, device=args.embedding_device)
 
+
+def load_nemotron_embedding_model():
+    """Load NVIDIA's custom-code embedding model from a local Hub snapshot."""
+    local_path = download_hf_model(
+        NEMOTRON_MODEL_REPO,
+        storage_dir=args.model_storage_dir,
+        token=args.hf_access_token,
+    )
+    logger.info(f"📦 Loaded Nemotron embedding snapshot: {NEMOTRON_MODEL_REPO} -> {local_path}")
+    return NEMOTRON_MODEL_REPO, NemotronEmbeddingModel(
+        local_path,
+        truncate_dim=args.embedding_dim,
+        device=args.embedding_device,
+    )
+
 def load_embedding_model_instance():
     """Load a single embedding model instance based on args"""
     if args.embedding_model == 'qwen':
@@ -298,6 +314,8 @@ def load_embedding_model_instance():
         )
     elif args.embedding_model == 'hf':
         _, model = load_hf_embedding_model()
+    elif args.embedding_model == 'nemotron':
+        _, model = load_nemotron_embedding_model()
     else:
         # MixedBread model
         model = SentenceTransformer(
@@ -346,6 +364,8 @@ def initialize_models():
         logger.info(f"Using Qwen backend: {args.qwen_backend}")
     elif args.embedding_model == 'hf':
         logger.info(f"Using Hugging Face model slug: {args.hf_model_slug}")
+    elif args.embedding_model == 'nemotron':
+        logger.info(f"Using NVIDIA Nemotron model: {NEMOTRON_MODEL_REPO}")
     
     shared_qwen_pool = None
     
@@ -370,6 +390,8 @@ def initialize_models():
             embedding_model_name = f"Qwen/Qwen3-Embedding-{args.qwen_size}"
         elif args.embedding_model == 'hf':
             embedding_model_name = resolve_model_repo_id(path=args.hf_model_slug) if args.hf_model_slug else "hf"
+        elif args.embedding_model == 'nemotron':
+            embedding_model_name = NEMOTRON_MODEL_REPO
         else:
             embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
         
@@ -396,6 +418,8 @@ def initialize_models():
             )
         elif args.embedding_model == 'hf':
             embedding_model_name, embedding_model = load_hf_embedding_model()
+        elif args.embedding_model == 'nemotron':
+            embedding_model_name, embedding_model = load_nemotron_embedding_model()
         else:
             embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
             embedding_model = SentenceTransformer(embedding_model_name, truncate_dim=args.embedding_dim, device=args.embedding_device)

@@ -22,6 +22,13 @@ def test_resolves_standard_qwen_selector():
     assert resolve_model_repo_id(model_name="qwen", size="4B") == "Qwen/Qwen3-Embedding-4B"
 
 
+def test_resolves_standard_nemotron_selector():
+    assert (
+        resolve_model_repo_id(model_name="nemotron")
+        == "nvidia/llama-nemotron-embed-1b-v2"
+    )
+
+
 def test_requires_model_selector():
     with pytest.raises(ValueError, match="Provide author/path"):
         resolve_model_repo_id()

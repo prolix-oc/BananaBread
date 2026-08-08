@@ -463,9 +463,14 @@ async def embedding_endpoint(
         raise HTTPException(status_code=400, detail="Input must be provided")
     prompt_tokens = consume_user_tokens(auth["username"], inputs)
 
-    logger.info(f"📄 Processing {len(inputs)} documents for embeddings (format: {request.encoding_format})")
+    logger.info(
+        f"📄 Processing {len(inputs)} {request.input_type} input(s) for embeddings "
+        f"(format: {request.encoding_format})"
+    )
 
-    key = get_embedding_cache_key(inputs, request.encoding_format, args.quant) if inputs else ""
+    key = get_embedding_cache_key(
+        inputs, request.encoding_format, args.quant, request.input_type
+    ) if inputs else ""
     cached = embedding_cache.get(auth["username"], key)
     if cached is not None:
         cached_result = deepcopy(cached)
@@ -480,6 +485,8 @@ async def embedding_endpoint(
             model = models_manager.embedding_model_pool.get_model()
         else:
             model = models_manager.embedding_model
+        if request.input_type == "query" and hasattr(model, "encode_query"):
+            return model.encode_query(inputs)
         return model.encode(inputs)
 
     t_encode = time.perf_counter()
@@ -561,7 +568,7 @@ async def embedding_endpoint(
         {
             "model": models_manager.embedding_model_name,
             "quantization": args.quant,
-            "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'hf'} else "native",
+            "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'nemotron', 'hf'} else "native",
         },
     )
     background_tasks.add_task(embedding_cache.set, auth["username"], key, result)
@@ -856,7 +863,7 @@ async def read_root():
         "embedding_model": args.embedding_model,
         "embedding_model_name": models_manager.embedding_model_name,
         "embedding_quantization": args.quant,
-        "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'hf'} else "native",
+        "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'nemotron', 'hf'} else "native",
         "endpoints": {
             "embeddings": "/v1/embeddings",
             "rerank": "/v1/rerank", 

@@ -440,6 +440,13 @@ def test_embedding_cache_key_changes_with_encoding_format():
     assert key1 != key2
 
 
+def test_embedding_cache_key_changes_with_input_type():
+    """Queries and documents use different prompts and cannot share an embedding."""
+    document_key = get_embedding_cache_key(["hello world"], "float", "standard", "document")
+    query_key = get_embedding_cache_key(["hello world"], "float", "standard", "query")
+    assert document_key != query_key
+
+
 def test_embedding_cache_key_stable_for_same_arguments():
     """Identical arguments must produce identical cache keys."""
     key1 = get_embedding_cache_key(["hello world"], "float", "standard")

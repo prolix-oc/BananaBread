@@ -16,6 +16,8 @@ EMBEDDING_TAGS = {
 STANDARD_MODEL_REPOS = {
     "mixedbread": "mixedbread-ai/mxbai-embed-large-v1",
     "mxbai-embed-large-v1": "mixedbread-ai/mxbai-embed-large-v1",
+    "nemotron": "nvidia/llama-nemotron-embed-1b-v2",
+    "llama-nemotron-embed-1b-v2": "nvidia/llama-nemotron-embed-1b-v2",
 }
 
 

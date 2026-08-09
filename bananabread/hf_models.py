@@ -18,6 +18,8 @@ STANDARD_MODEL_REPOS = {
     "mxbai-embed-large-v1": "mixedbread-ai/mxbai-embed-large-v1",
     "nemotron": "nvidia/llama-nemotron-embed-1b-v2",
     "llama-nemotron-embed-1b-v2": "nvidia/llama-nemotron-embed-1b-v2",
+    "nemotron-3-embed-1b-bf16": "nvidia/Nemotron-3-Embed-1B-BF16",
+    "nemotron-3-embed-8b-bf16": "nvidia/Nemotron-3-Embed-8B-BF16",
 }
 
 
@@ -44,6 +46,11 @@ def resolve_model_repo_id(
         model_key = clean_model_name.lower()
         if model_key == "qwen":
             return f"Qwen/Qwen3-Embedding-{clean_size or '0.6B'}"
+        if model_key in {"nemotron-3", "nemotron3"}:
+            nemotron_size = (clean_size or "1B").upper()
+            if nemotron_size not in {"1B", "8B"}:
+                raise ValueError("Nemotron-3 size must be '1B' or '8B'.")
+            return f"nvidia/Nemotron-3-Embed-{nemotron_size}-BF16"
         if clean_size:
             repo_name = f"{clean_model_name}-{clean_size}"
             return f"{clean_author}/{repo_name}" if clean_author else repo_name

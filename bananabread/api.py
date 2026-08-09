@@ -570,7 +570,7 @@ async def embedding_endpoint(
         {
             "model": models_manager.embedding_model_name,
             "quantization": args.quant,
-            "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'nemotron', 'hf'} else "native",
+            "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'nemotron', 'nemotron-3', 'hf'} else "native",
         },
     )
     background_tasks.add_task(embedding_cache.set, auth["username"], key, result)
@@ -878,7 +878,7 @@ async def read_root():
         "embedding_model": args.embedding_model,
         "embedding_model_name": models_manager.embedding_model_name,
         "embedding_quantization": args.quant,
-        "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'nemotron', 'hf'} else "native",
+        "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'nemotron', 'nemotron-3', 'hf'} else "native",
         "endpoints": endpoints,
     }
 

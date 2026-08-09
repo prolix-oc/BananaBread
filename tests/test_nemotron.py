@@ -1,5 +1,5 @@
 import bananabread.models.nemotron as nemotron
-from bananabread.models.nemotron import NemotronEmbeddingModel
+from bananabread.models.nemotron import Nemotron3EmbeddingModel, NemotronEmbeddingModel
 
 
 class FakeSentenceTransformer:
@@ -58,3 +58,27 @@ def test_nemotron_builds_4bit_bitsandbytes_kwargs(monkeypatch):
         "bnb_4bit_use_double_quant": True,
         "bnb_4bit_compute_dtype": nemotron.torch.bfloat16,
     }
+
+
+def test_nemotron_3_uses_saved_sentence_transformers_prompts(monkeypatch):
+    class PromptAwareFakeSentenceTransformer(FakeSentenceTransformer):
+        def encode_document(self, texts, *args, **kwargs):
+            self.document_calls = [(texts, args, kwargs)]
+            return texts
+
+        def encode_query(self, texts, *args, **kwargs):
+            self.query_calls = [(texts, args, kwargs)]
+            return texts
+
+    monkeypatch.setattr(nemotron, "SentenceTransformer", PromptAwareFakeSentenceTransformer)
+    model = Nemotron3EmbeddingModel("/models/nemotron-3", truncate_dim=1024, device="cuda")
+
+    assert model.model.init_kwargs == {
+        "truncate_dim": 1024,
+        "device": "cuda",
+        "model_kwargs": {"dtype": nemotron.torch.bfloat16},
+    }
+    assert model.encode(["a document"]) == ["a document"]
+    assert model.encode_query(["find this"]) == ["find this"]
+    assert model.model.document_calls == [(["a document"], (), {})]
+    assert model.model.query_calls == [(["find this"], (), {})]

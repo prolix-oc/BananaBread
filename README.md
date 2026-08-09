@@ -13,6 +13,7 @@ BananaBread downloads a specialized model to your machine and runs a local serve
 | [MixedBread mxbai-rerank-base-v2](https://huggingface.co/mixedbread-ai/mxbai-rerank-base-v2) | Reranking | Default reranker. |
 | [Qwen3-Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | Embedding + Reranking | One model does both. Sizes: 0.6B, 4B, 8B. |
 | [NVIDIA Llama Nemotron Embed 1B v2](https://huggingface.co/nvidia/llama-nemotron-embed-1b-v2) | Embedding | Multilingual retrieval, 8K-token inputs, and Matryoshka dimensions (384–2048). |
+| [NVIDIA Nemotron-3 Embed](https://huggingface.co/nvidia/Nemotron-3-Embed-1B-BF16) | Embedding | Multilingual retrieval. Official BF16 checkpoints in 1B and 8B sizes, 32K-token inputs, and 2,048-dimensional Matryoshka embeddings. |
 | [RoBERTa go_emotions](https://huggingface.co/SamLowe/roberta-base-go_emotions) | Classification | Emotion classification. Loaded on first use. |
 
 ---
@@ -168,6 +169,20 @@ uv run --extra cuda-quant bananabread-emb --embedding-model nemotron --nemotron-
 
 Nemotron defaults to embedding-only mode; use `--reranking-model mixedbread` only when you need reranking too. For any model, `--reranking-model none` disables reranking. The `/v1/rerank` endpoint then returns HTTP 503 instead of loading a reranker. Nemotron also serializes requests that share one model instance to avoid the Hugging Face fast-tokenizer `RuntimeError: Already borrowed`; use `num_concurrent_embedding` greater than one on CUDA to load independent model instances when you need parallel inference.
 
+### Using NVIDIA Nemotron-3 Embed
+
+Nemotron-3 Embed is available from Hugging Face as the official `1B` and `8B` BF16 checkpoints. Both are 2,048-dimensional multilingual retrieval models with a 32,768-token input limit. They run with the saved SentenceTransformers query/document prompts and do not enable remote code.
+
+```bash
+# 1B BF16 checkpoint (the default Nemotron-3 size)
+uv run bananabread-emb --embedding-model nemotron-3 --nemotron-size 1B --embedding-device cuda --embedding-dim 2048
+
+# 8B BF16 checkpoint
+uv run bananabread-emb --embedding-model nemotron-3 --nemotron-size 8B --embedding-device cuda --embedding-dim 2048
+```
+
+Use the BananaBread `input_type` extension exactly as for the earlier Nemotron model: `document` (the default) uses the model's saved `passage:` prompt, and `query` uses its saved `query:` prompt. Keep the same `embedding_dim` for corpus indexing and queries. The checkpoints require Transformers 5.2+ and SentenceTransformers 5.4.1+, which BananaBread installs automatically.
+
 ### Using a Hugging Face embedding model
 
 You can run a SentenceTransformers or embedding-capable Hugging Face model by slug. BananaBread resolves and validates the Hub metadata, downloads the snapshot into `model_storage_dir`, then loads the local snapshot with SentenceTransformers:
@@ -202,13 +217,14 @@ All available options (grouped by purpose):
 |---|---|---|
 | `config` | `"config.json"` | Path to the config JSON file, or set `BANANABREAD_CONFIG` |
 | **Model selection** | | |
-| `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, `"nemotron"`, or `"hf"` |
-| `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, `"none"`, or `null` (auto: Qwen uses Qwen, Nemotron is disabled, otherwise MixedBread) |
+| `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, `"nemotron"`, `"nemotron-3"`, or `"hf"` |
+| `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, `"none"`, or `null` (auto: Qwen uses Qwen, either Nemotron selector is disabled, otherwise MixedBread) |
 | `qwen_size` | `"0.6B"` | Qwen model size: `"0.6B"`, `"4B"`, or `"8B"` |
 | `qwen_backend` | `"torch"` | Qwen runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, or `"onnx-int8"` |
 | `qwen_compute_dtype` | `"bfloat16"` | Compute dtype for torch Qwen backends: `"bfloat16"`, `"float16"`, or `"float32"` |
 | `nemotron_backend` | `"torch"` | Nemotron runtime: `"torch"`, `"torch-bnb-8bit"`, or `"torch-bnb-4bit"` |
 | `nemotron_compute_dtype` | `"bfloat16"` | Compute dtype for Nemotron torch backends |
+| `nemotron_size` | `"1B"` | Nemotron-3 checkpoint size: `"1B"` or `"8B"` |
 | `qwen_onnx_model_path` | `null` | Local `.onnx` file or directory for `qwen_backend="onnx-int8"` |
 | `qwen_onnx_provider` | `"CPUExecutionProvider"` | ONNX Runtime execution provider |
 | `qwen_max_length` | `8192` | Maximum token length for Qwen embedding inputs |
@@ -469,7 +485,7 @@ curl -X POST http://localhost:8008/v1/models/download \
   }'
 ```
 
-The downloader accepts `author` + `path`, a direct repo id in `path`, or standard selectors such as `{"model_name":"qwen","size":"0.6B"}` and `{"model_name":"nemotron"}`. It checks Hub metadata for SentenceTransformers or embedding capability before downloading unless `require_embedding_capable` is set to `false`.
+The downloader accepts `author` + `path`, a direct repo id in `path`, or standard selectors such as `{"model_name":"qwen","size":"0.6B"}`, `{"model_name":"nemotron"}`, and `{"model_name":"nemotron-3","size":"8B"}`. It checks Hub metadata for SentenceTransformers or embedding capability before downloading unless `require_embedding_capable` is set to `false`.
 
 For private or gated models, pass `hf_access_token` in the request body or configure `hf_access_token`/`--hf-access-token` on the server. The token is used for Hub metadata and snapshot download calls and is not returned in the response.
 

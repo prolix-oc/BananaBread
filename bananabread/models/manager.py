@@ -7,7 +7,12 @@ from mxbai_rerank import MxbaiRerankV2
 
 from bananabread.config import logger, args
 from bananabread.hf_models import download_hf_model, inspect_hf_model, resolve_model_repo_id
-from bananabread.models.nemotron import NEMOTRON_MODEL_REPO, NemotronEmbeddingModel
+from bananabread.models.nemotron import (
+    NEMOTRON_3_MODEL_REPOS,
+    NEMOTRON_MODEL_REPO,
+    Nemotron3EmbeddingModel,
+    NemotronEmbeddingModel,
+)
 from bananabread.models.qwen import QwenRawModel, load_qwen_model
 
 # Global model references
@@ -300,6 +305,24 @@ def load_nemotron_embedding_model():
         compute_dtype=args.nemotron_compute_dtype,
     )
 
+
+def load_nemotron_3_embedding_model():
+    """Load an official Nemotron-3 BF16 SentenceTransformers snapshot."""
+    repo_id = NEMOTRON_3_MODEL_REPOS[args.nemotron_size]
+    local_path = download_hf_model(
+        repo_id,
+        storage_dir=args.model_storage_dir,
+        token=args.hf_access_token,
+    )
+    logger.info(f"📦 Loaded Nemotron-3 embedding snapshot: {repo_id} -> {local_path}")
+    return repo_id, Nemotron3EmbeddingModel(
+        local_path,
+        truncate_dim=args.embedding_dim,
+        device=args.embedding_device,
+        backend=args.nemotron_backend,
+        compute_dtype=args.nemotron_compute_dtype,
+    )
+
 def load_embedding_model_instance():
     """Load a single embedding model instance based on args"""
     if args.embedding_model == 'qwen':
@@ -318,6 +341,8 @@ def load_embedding_model_instance():
         _, model = load_hf_embedding_model()
     elif args.embedding_model == 'nemotron':
         _, model = load_nemotron_embedding_model()
+    elif args.embedding_model == 'nemotron-3':
+        _, model = load_nemotron_3_embedding_model()
     else:
         # MixedBread model
         model = SentenceTransformer(
@@ -345,7 +370,7 @@ def initialize_models():
         if args.embedding_model == 'qwen':
             reranking_model_choice = 'qwen'
             logger.info("No reranking model specified, using qwen (same as embedding model)")
-        elif args.embedding_model == 'nemotron':
+        elif args.embedding_model in {'nemotron', 'nemotron-3'}:
             reranking_model_choice = None
             logger.info("No reranking model specified, leaving Nemotron in embedding-only mode")
         else:
@@ -376,6 +401,11 @@ def initialize_models():
             f"Using NVIDIA Nemotron model: {NEMOTRON_MODEL_REPO} "
             f"(backend={args.nemotron_backend})"
         )
+    elif args.embedding_model == 'nemotron-3':
+        logger.info(
+            f"Using NVIDIA Nemotron-3 model: {NEMOTRON_3_MODEL_REPOS[args.nemotron_size]} "
+            f"(backend={args.nemotron_backend})"
+        )
     
     shared_qwen_pool = None
     
@@ -402,6 +432,8 @@ def initialize_models():
             embedding_model_name = resolve_model_repo_id(path=args.hf_model_slug) if args.hf_model_slug else "hf"
         elif args.embedding_model == 'nemotron':
             embedding_model_name = NEMOTRON_MODEL_REPO
+        elif args.embedding_model == 'nemotron-3':
+            embedding_model_name = NEMOTRON_3_MODEL_REPOS[args.nemotron_size]
         else:
             embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
         
@@ -430,6 +462,8 @@ def initialize_models():
             embedding_model_name, embedding_model = load_hf_embedding_model()
         elif args.embedding_model == 'nemotron':
             embedding_model_name, embedding_model = load_nemotron_embedding_model()
+        elif args.embedding_model == 'nemotron-3':
+            embedding_model_name, embedding_model = load_nemotron_3_embedding_model()
         else:
             embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
             embedding_model = SentenceTransformer(embedding_model_name, truncate_dim=args.embedding_dim, device=args.embedding_device)

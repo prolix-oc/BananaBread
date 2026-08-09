@@ -13,6 +13,10 @@ from sentence_transformers import SentenceTransformer
 
 
 NEMOTRON_MODEL_REPO = "nvidia/llama-nemotron-embed-1b-v2"
+NEMOTRON_3_MODEL_REPOS = {
+    "1B": "nvidia/Nemotron-3-Embed-1B-BF16",
+    "8B": "nvidia/Nemotron-3-Embed-8B-BF16",
+}
 _QUERY_PREFIX = "query: "
 _DOCUMENT_PREFIX = "passage: "
 
@@ -111,3 +115,58 @@ class NemotronEmbeddingModel:
     def __getattr__(self, name: str) -> Any:
         """Expose SentenceTransformers attributes used by warmup and compilation."""
         return getattr(self.model, name)
+
+
+class Nemotron3EmbeddingModel(NemotronEmbeddingModel):
+    """Adapter for Nemotron-3's saved retrieval prompts.
+
+    Nemotron-3 is a standard SentenceTransformers checkpoint and does not
+    require remote code.  Its checkpoint includes query/document prompts and
+    normalization metadata; use the corresponding SentenceTransformers APIs
+    when available so those settings remain authoritative.
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        *,
+        truncate_dim: int,
+        device: str,
+        backend: str = "torch",
+        compute_dtype: str = "bfloat16",
+    ) -> None:
+        self.backend = backend
+        self.compute_dtype = self._torch_dtype(compute_dtype)
+        model_kwargs = self._model_kwargs(device)
+        if backend == "torch":
+            model_kwargs = {"dtype": self.compute_dtype}
+
+        self.model = SentenceTransformer(
+            model_path,
+            truncate_dim=truncate_dim,
+            device=device,
+            model_kwargs=model_kwargs,
+        )
+        self.tokenizer_lock = threading.RLock()
+        try:
+            self.tokenizer = self.model[0].tokenizer
+        except (AttributeError, IndexError, TypeError):
+            self.tokenizer = None
+
+    def encode(self, texts: Sequence[str], *args: Any, **kwargs: Any) -> Any:
+        with self.tokenizer_lock:
+            encode_document = getattr(self.model, "encode_document", None)
+            if encode_document:
+                return encode_document(texts, *args, **kwargs)
+            return self.model.encode(
+                [f"{_DOCUMENT_PREFIX}{text}" for text in texts], *args, **kwargs
+            )
+
+    def encode_query(self, texts: Sequence[str], *args: Any, **kwargs: Any) -> Any:
+        with self.tokenizer_lock:
+            encode_query = getattr(self.model, "encode_query", None)
+            if encode_query:
+                return encode_query(texts, *args, **kwargs)
+            return self.model.encode(
+                [f"{_QUERY_PREFIX}{text}" for text in texts], *args, **kwargs
+            )

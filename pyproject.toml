@@ -35,10 +35,10 @@ dependencies = [
 
     # Machine learning and AI
     "torch>=2.9.0,<2.10.0",
-    # Nemotron's custom bidirectional-Llama architecture requires Transformers 4.44+.
-    "transformers>=4.44.0",
+    # Nemotron-3 Embed requires Transformers 5.2+ and SentenceTransformers 5.4.1+.
+    "transformers>=5.2.0",
     "huggingface-hub>=0.20.0",
-    "sentence-transformers>=2.2.0",
+    "sentence-transformers>=5.4.1",
     "mxbai-rerank>=0.1.0",
 
     # System and utilities

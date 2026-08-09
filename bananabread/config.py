@@ -165,6 +165,7 @@ DEFAULTS = {
     "qwen_compute_dtype": "bfloat16",
     "nemotron_backend": "torch",
     "nemotron_compute_dtype": "bfloat16",
+    "nemotron_size": "1B",
     "qwen_onnx_model_path": None,
     "qwen_onnx_provider": "CPUExecutionProvider",
     "qwen_max_length": 8192,
@@ -192,13 +193,14 @@ DEFAULTS = {
 }
 
 CONFIG_CHOICES = {
-    "embedding_model": {"mixedbread", "qwen", "nemotron", "hf"},
+    "embedding_model": {"mixedbread", "qwen", "nemotron", "nemotron-3", "hf"},
     "reranking_model": {"mixedbread", "qwen", "none", None},
     "qwen_size": {"0.6B", "4B", "8B"},
     "qwen_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit", "onnx-int8"},
     "qwen_compute_dtype": {"bfloat16", "float16", "float32"},
     "nemotron_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit"},
     "nemotron_compute_dtype": {"bfloat16", "float16", "float32"},
+    "nemotron_size": {"1B", "8B"},
     "quant": {"standard", "ubinary", "int8"},
     "log_level": {"DEBUG", "INFO", "WARNING", "ERROR"},
 }
@@ -295,7 +297,7 @@ def validate_args(parsed_args):
 
     nemotron_device = parsed_args.embedding_device
     if (
-        parsed_args.embedding_model == "nemotron"
+        parsed_args.embedding_model in {"nemotron", "nemotron-3"}
         and parsed_args.nemotron_backend.startswith("torch-bnb")
         and nemotron_device != "auto"
         and not nemotron_device.startswith("cuda")
@@ -410,7 +412,7 @@ def parse_args():
                        help=f"Number of warmup inference samples to run (default: {DEFAULTS['warmup_samples']})")
 
     # Embedding model selection arguments
-    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'hf'], default=DEFAULTS["embedding_model"],
+    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'nemotron-3', 'hf'], default=DEFAULTS["embedding_model"],
                        help=f"Embedding model to use (default: {DEFAULTS['embedding_model']})")
     parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default=DEFAULTS["qwen_size"],
                        help=f"Qwen model size to use when --embedding-model=qwen (default: {DEFAULTS['qwen_size']})")
@@ -422,6 +424,8 @@ def parse_args():
                        help=f"Nemotron runtime backend (default: {DEFAULTS['nemotron_backend']})")
     parser.add_argument("--nemotron-compute-dtype", type=str, choices=['bfloat16', 'float16', 'float32'], default=DEFAULTS["nemotron_compute_dtype"],
                        help=f"Compute dtype for Nemotron torch backends (default: {DEFAULTS['nemotron_compute_dtype']})")
+    parser.add_argument("--nemotron-size", type=str, choices=['1B', '8B'], default=DEFAULTS["nemotron_size"],
+                       help=f"Nemotron-3 model size to use when --embedding-model=nemotron-3 (default: {DEFAULTS['nemotron_size']})")
     parser.add_argument("--qwen-onnx-model-path", type=str, default=DEFAULTS.get("qwen_onnx_model_path"),
                        help="Local ONNX model directory or .onnx file for --qwen-backend=onnx-int8")
     parser.add_argument("--qwen-onnx-provider", type=str, default=DEFAULTS["qwen_onnx_provider"],

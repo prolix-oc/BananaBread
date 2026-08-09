@@ -29,6 +29,26 @@ def test_resolves_standard_nemotron_selector():
     )
 
 
+def test_resolves_nemotron_3_selectors():
+    assert (
+        resolve_model_repo_id(model_name="nemotron-3")
+        == "nvidia/Nemotron-3-Embed-1B-BF16"
+    )
+    assert (
+        resolve_model_repo_id(model_name="nemotron-3", size="1B")
+        == "nvidia/Nemotron-3-Embed-1B-BF16"
+    )
+    assert (
+        resolve_model_repo_id(model_name="nemotron-3", size="8B")
+        == "nvidia/Nemotron-3-Embed-8B-BF16"
+    )
+
+
+def test_rejects_unsupported_nemotron_3_size():
+    with pytest.raises(ValueError, match="Nemotron-3 size"):
+        resolve_model_repo_id(model_name="nemotron-3", size="4B")
+
+
 def test_requires_model_selector():
     with pytest.raises(ValueError, match="Provide author/path"):
         resolve_model_repo_id()

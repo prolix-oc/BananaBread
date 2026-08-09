@@ -6,6 +6,7 @@
     "qwen_compute_dtype": "bfloat16",
     "nemotron_backend": "torch",
     "nemotron_compute_dtype": "bfloat16",
+    "nemotron_size": "1B",
     "matmul_cast_fp16": false,
     "qwen_onnx_model_path": null,
     "qwen_onnx_provider": "CPUExecutionProvider",

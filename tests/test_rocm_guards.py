@@ -1,5 +1,4 @@
-"""AMD ROCm runtime guards: backend fallbacks, bitsandbytes guards, FA2 gating,
-and the pyproject rewrite used by install_rocm_torch.py."""
+"""AMD ROCm runtime behavior, FA2 gating, and installer pyproject rewrites."""
 
 import argparse
 import sys
@@ -33,19 +32,49 @@ def test_flash_attention_disabled_on_rocm(monkeypatch):
     assert "ROCm" in reason
 
 
-def test_nemotron_bnb_rejected_on_rocm(monkeypatch):
+def test_nemotron_bnb_allowed_on_rocm(monkeypatch):
     _set_hip(monkeypatch, "6.3.41935")
+    captured = {}
+
+    class FakeBitsAndBytesConfig:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import transformers
+
+    monkeypatch.setattr(transformers, "BitsAndBytesConfig", FakeBitsAndBytesConfig)
     model = object.__new__(nemotron.NemotronEmbeddingModel)
     model.backend = "torch-bnb-8bit"
     model.compute_dtype = torch.bfloat16
-    with pytest.raises(ValueError, match="NVIDIA-only"):
-        model._model_kwargs("cuda:0")
+    kwargs = model._model_kwargs("cuda:0")
+    assert kwargs["device_map"] == {"": "cuda:0"}
+    assert captured == {"load_in_8bit": True}
 
 
-def test_qwen_bnb_rejected_on_rocm(monkeypatch):
+def test_qwen_bnb_allowed_on_rocm(monkeypatch):
     _set_hip(monkeypatch, "6.3.41935")
-    with pytest.raises(ValueError, match="NVIDIA-only"):
-        qwen.QwenBnbModel("Qwen/Qwen3-Embedding-0.6B", device_arg="cuda:0")
+    captured = {}
+
+    class FakeBitsAndBytesConfig:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class FakeModel:
+        device = "cuda:0"
+
+        def eval(self):
+            return self
+
+    import transformers
+
+    monkeypatch.setattr(transformers, "BitsAndBytesConfig", FakeBitsAndBytesConfig)
+    monkeypatch.setattr(qwen.BaseQwenModel, "__init__", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(qwen.QwenBnbModel, "_attention_kwargs", lambda self, *args: {})
+    monkeypatch.setattr(qwen.AutoModel, "from_pretrained", lambda *args, **kwargs: FakeModel())
+
+    model = qwen.QwenBnbModel("Qwen/Qwen3-Embedding-0.6B", device_arg="cuda:0")
+    assert model.device == "cuda:0"
+    assert captured == {"load_in_8bit": True}
 
 
 def _bnb_namespace():
@@ -63,14 +92,14 @@ def _bnb_namespace():
     )
 
 
-def test_validate_args_falls_back_to_torch_backends_on_rocm(monkeypatch):
+def test_validate_args_keeps_bnb_backends_on_rocm(monkeypatch):
     _set_hip(monkeypatch, "6.3.41935")
     result = config.validate_args(_bnb_namespace())
-    assert result.qwen_backend == "torch"
-    assert result.nemotron_backend == "torch"
+    assert result.qwen_backend == "torch-bnb-8bit"
+    assert result.nemotron_backend == "torch-bnb-4bit"
 
 
-def test_validate_args_keeps_bnb_backends_without_rocme(monkeypatch):
+def test_validate_args_keeps_bnb_backends_without_rocm(monkeypatch):
     _set_hip(monkeypatch, None)
     result = config.validate_args(_bnb_namespace())
     assert result.qwen_backend == "torch-bnb-8bit"

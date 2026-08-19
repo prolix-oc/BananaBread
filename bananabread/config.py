@@ -340,15 +340,7 @@ def validate_args(parsed_args):
     if parsed_args.qwen_backend.startswith("torch-bnb") and any(device == "cpu" for device in active_qwen_devices):
         logger.warning(
             "⚠️  qwen_backend uses bitsandbytes, but at least one active Qwen device is CPU. "
-            "Falling back to qwen_backend='torch' instead of attempting CUDA quantized loading."
-        )
-        parsed_args.qwen_backend = "torch"
-
-    if parsed_args.qwen_backend.startswith("torch-bnb") and is_rocm_build():
-        logger.warning(
-            "⚠️  qwen_backend uses bitsandbytes, but the installed PyTorch is an AMD "
-            "ROCm build. bitsandbytes quantization is NVIDIA-only; falling back to "
-            "qwen_backend='torch'."
+            "Falling back to qwen_backend='torch' instead of attempting GPU quantized loading."
         )
         parsed_args.qwen_backend = "torch"
 
@@ -360,20 +352,9 @@ def validate_args(parsed_args):
         and not nemotron_device.startswith("cuda")
     ):
         logger.warning(
-            "⚠️  nemotron_backend uses bitsandbytes, but the embedding device is not CUDA. "
+            "⚠️  nemotron_backend uses bitsandbytes, but the embedding device is not "
+            "a CUDA/HIP accelerator. "
             "Falling back to nemotron_backend='torch'."
-        )
-        parsed_args.nemotron_backend = "torch"
-
-    if (
-        parsed_args.embedding_model in {"nemotron", "nemotron-3"}
-        and parsed_args.nemotron_backend.startswith("torch-bnb")
-        and is_rocm_build()
-    ):
-        logger.warning(
-            "⚠️  nemotron_backend uses bitsandbytes, but the installed PyTorch is an "
-            "AMD ROCm build. bitsandbytes quantization is NVIDIA-only; falling back "
-            "to nemotron_backend='torch'."
         )
         parsed_args.nemotron_backend = "torch"
 

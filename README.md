@@ -119,7 +119,7 @@ uv run bananabread-emb --embedding-model qwen
 # Pick a larger Qwen model (0.6B, 4B, or 8B)
 uv run bananabread-emb --embedding-model qwen --qwen-size 4B
 
-# Load Qwen with CUDA 8-bit weight quantization
+# Load Qwen with GPU 8-bit weight quantization
 uv run --extra cuda-quant bananabread-emb --embedding-model qwen --qwen-size 4B --embedding-device cuda --qwen-backend torch-bnb-8bit
 
 # Run a pre-exported INT8 ONNX Qwen model on CPU
@@ -157,7 +157,7 @@ curl -X POST http://localhost:8008/v1/embeddings \
 
 Nemotron requires NVIDIA's custom bidirectional-Llama implementation, so this dedicated model selector enables `trust_remote_code` only for NVIDIA's fixed model repository. Review the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/) before use.
 
-For lower VRAM use, the dedicated CUDA bitsandbytes backends quantize the model weights (separate from the response-vector `quant` option):
+For lower VRAM use, the dedicated bitsandbytes backends quantize the model weights on NVIDIA CUDA or AMD ROCm GPUs (separate from the response-vector `quant` option):
 
 ```bash
 # 8-bit weights
@@ -290,7 +290,7 @@ uv run bananabread-emb --embedding-device cuda:0 --rerank-device cuda:1
 
 ### AMD GPUs (ROCm)
 
-PyTorch's ROCm builds expose AMD GPUs through the same `cuda` device API, so every `--embedding-device cuda` / `--rerank-device cuda` flag works unchanged, and BananaBread detects ROCm builds at startup. Two AMD caveats are handled automatically: Flash Attention 2 prebuilt wheels are CUDA builds (BananaBread disables FA2 on ROCm builds and falls back to SDPA), and the `cuda-quant` extra (bitsandbytes) is NVIDIA-only (BananaBread falls back to the plain `torch` backend on ROCm).
+PyTorch's ROCm builds expose AMD GPUs through the same `cuda` device API, so every `--embedding-device cuda` / `--rerank-device cuda` flag works unchanged, and BananaBread detects ROCm builds at startup. Flash Attention 2 prebuilt wheels are CUDA builds, so BananaBread disables FA2 on ROCm and falls back to SDPA. The `cuda-quant` extra retains its existing name but installs bitsandbytes 0.50.1 or newer, whose prebuilt wheels support ROCm 7.2 and the `gfx1100`, `gfx1200`, and `gfx1201` GPU targets.
 
 #### Linux
 
@@ -378,9 +378,9 @@ At startup, BananaBread only enables Flash Attention 2 when `flash_attn` imports
 
 > **Windows + bitsandbytes users:** Flash Attention 2 is automatically disabled when using `torch-bnb-8bit` or `torch-bnb-4bit` on Windows because the combination triggers a known CUDA compatibility issue (`torch.AcceleratorError: CUDA error: unknown error`). BananaBread falls back to SDPA attention automatically.
 
-### Qwen CUDA quantization
+### Qwen GPU quantization
 
-Qwen supports optional bitsandbytes weight quantization on CUDA. This reduces model VRAM usage; it is separate from `quant`, which quantizes the returned embedding vectors.
+Qwen supports optional bitsandbytes weight quantization on NVIDIA CUDA and AMD ROCm GPUs. This reduces model VRAM usage; it is separate from `quant`, which quantizes the returned embedding vectors.
 
 ```bash
 # Safer VRAM reduction
@@ -390,7 +390,7 @@ uv run --extra cuda-quant bananabread-emb --embedding-model qwen --qwen-size 4B 
 uv run --extra cuda-quant bananabread-emb --embedding-model qwen --qwen-size 4B --embedding-device cuda --qwen-backend torch-bnb-4bit
 ```
 
-For quantized CUDA backends, keep `num_concurrent_embedding` and `num_concurrent_rerank` at `1` unless you have enough VRAM for multiple model copies.
+For quantized GPU backends, keep `num_concurrent_embedding` and `num_concurrent_rerank` at `1` unless you have enough VRAM for multiple model copies.
 
 You can also set these options in `config.json`:
 

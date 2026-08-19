@@ -228,7 +228,7 @@ class QwenTorchModel(BaseQwenModel):
 
 
 class QwenBnbModel(QwenTorchModel):
-    """Qwen torch backend with bitsandbytes weight quantization for CUDA inference."""
+    """Qwen torch backend with bitsandbytes weight quantization for GPU inference."""
 
     def __init__(
         self,
@@ -240,13 +240,7 @@ class QwenBnbModel(QwenTorchModel):
         max_length: int = 8192,
     ):
         if device_arg.lower() == "cpu":
-            raise ValueError("bitsandbytes Qwen backends require a CUDA device, not CPU")
-
-        if is_rocm_build():
-            raise ValueError(
-                "bitsandbytes Qwen backends are NVIDIA-only and cannot run on an AMD "
-                "ROCm build; use qwen_backend='torch'"
-            )
+            raise ValueError("bitsandbytes Qwen backends require a CUDA/HIP device, not CPU")
 
         self.backend_name = f"torch-bnb-{quantization_bits}bit"
         self.device_arg = device_arg

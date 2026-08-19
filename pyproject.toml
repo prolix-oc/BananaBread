@@ -49,7 +49,7 @@ dependencies = [
 
 [project.optional-dependencies]
 cuda-quant = [
-    "bitsandbytes>=0.43.0",
+    "bitsandbytes>=0.50.1",
 ]
 onnx = [
     "onnxruntime>=1.18.0",

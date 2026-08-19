@@ -61,6 +61,31 @@ def test_nemotron_builds_4bit_bitsandbytes_kwargs(monkeypatch):
     }
 
 
+def test_nemotron_8bit_uses_fp16_when_matmul_cast_is_enabled(monkeypatch):
+    captured = {}
+
+    class FakeBitsAndBytesConfig:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import transformers
+
+    monkeypatch.setattr(nemotron, "SentenceTransformer", FakeSentenceTransformer)
+    monkeypatch.setattr(transformers, "BitsAndBytesConfig", FakeBitsAndBytesConfig)
+    monkeypatch.setattr(nemotron.args, "matmul_cast_fp16", True)
+    model = NemotronEmbeddingModel(
+        "/models/nemotron",
+        truncate_dim=1024,
+        device="cuda",
+        backend="torch-bnb-8bit",
+        compute_dtype="bfloat16",
+    )
+
+    assert model.compute_dtype is nemotron.torch.float16
+    assert model.model.init_kwargs["model_kwargs"]["dtype"] is nemotron.torch.float16
+    assert captured == {"load_in_8bit": True}
+
+
 def test_nemotron_3_uses_saved_sentence_transformers_prompts(monkeypatch):
     class PromptAwareFakeSentenceTransformer(FakeSentenceTransformer):
         def encode_document(self, texts, *args, **kwargs):

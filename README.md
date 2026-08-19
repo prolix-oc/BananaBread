@@ -235,7 +235,7 @@ All available options (grouped by purpose):
 | `qwen_onnx_provider` | `"CPUExecutionProvider"` | ONNX Runtime execution provider |
 | `qwen_max_length` | `8192` | Maximum token length for Qwen embedding inputs |
 | `qwen_flash_attention` | `false` | Enable Flash Attention 2 for Qwen models |
-| `matmul_cast_fp16` | `false` | Cast compute dtype to `float16` during bitsandbytes 8-bit quantization (suppresses bfloat16→fp16 warning) |
+| `matmul_cast_fp16` | `false` | Cast Qwen and Nemotron compute dtype to `float16` during bitsandbytes 8-bit quantization (suppresses bfloat16→fp16 warning) |
 | `model_storage_dir` | `"./models"` | Directory used by `/v1/models/download` for explicit model snapshots |
 | `hf_model_slug` | `null` | Hugging Face repo id used when `embedding_model="hf"` |
 | `hf_model_revision` | `null` | Optional branch, tag, or commit SHA for `hf_model_slug` |
@@ -428,7 +428,7 @@ You can also set these options in `config.json`:
 }
 ```
 
-For the 4-bit NF4 backend, change `qwen_backend` to `"torch-bnb-4bit"`. Set `matmul_cast_fp16` to `true` if you want to use `float16` compute during 8-bit quantization instead of keeping `bfloat16` (this avoids the bfloat16→float16 cast warning entirely).
+For the 4-bit NF4 backend, change `qwen_backend` to `"torch-bnb-4bit"`. Set `matmul_cast_fp16` to `true` if you want Qwen or Nemotron to use `float16` compute during 8-bit quantization instead of keeping `bfloat16` (this avoids the bfloat16→float16 cast warning entirely).
 
 ### Qwen ONNX INT8
 

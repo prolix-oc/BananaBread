@@ -56,6 +56,8 @@ def _bnb_namespace():
         reranking_model="qwen",
         embedding_device="cuda",
         rerank_device="cuda:0",
+        qwen_compute_dtype="bfloat16",
+        nemotron_compute_dtype="bfloat16",
         enable_warmup=True,
         disable_warmup=False,
     )
@@ -75,6 +77,26 @@ def test_validate_args_keeps_bnb_backends_without_rocme(monkeypatch):
     assert result.nemotron_backend == "torch-bnb-4bit"
 
 
+def test_validate_args_uses_float16_without_native_bf16(monkeypatch):
+    _set_hip(monkeypatch, None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+    parsed = _bnb_namespace()
+    result = config.validate_args(parsed)
+    assert result.qwen_compute_dtype == "float16"
+    assert result.nemotron_compute_dtype == "float16"
+
+
+def test_validate_args_keeps_bfloat16_when_supported(monkeypatch):
+    _set_hip(monkeypatch, None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    parsed = _bnb_namespace()
+    result = config.validate_args(parsed)
+    assert result.qwen_compute_dtype == "bfloat16"
+    assert result.nemotron_compute_dtype == "bfloat16"
+
+
 # ----- install_rocm_torch.py: pyproject rewrite -----
 
 
@@ -84,8 +106,8 @@ def test_rewrite_replaces_url_and_preserves_other_keys():
         'extra-index-url = ["https://download.pytorch.org/whl/cu130"]\n'
         'index-strategy = "unsafe-best-match"\n'
     )
-    out = install_rocm_torch.rewrite_extra_index_url(text, "https://example/rocm6.3")
-    assert 'extra-index-url = ["https://example/rocm6.3"]' in out
+    out = install_rocm_torch.rewrite_extra_index_url(text, "https://example/rocm7.2")
+    assert 'extra-index-url = ["https://example/rocm7.2"]' in out
     assert 'index-strategy = "unsafe-best-match"' in out
     assert "[tool.uv]" in out
 
@@ -117,5 +139,9 @@ def test_rewrite_is_idempotent():
 
 
 def test_linux_lock_requirement_selects_exact_backend_build():
-    assert install_rocm_torch.linux_torch_requirement(False) == "torch==2.9.1+rocm6.3"
-    assert install_rocm_torch.linux_torch_requirement(True) == "torch==2.9.1+cu130"
+    assert install_rocm_torch.linux_torch_requirement(False) == "torch==2.11.0+rocm7.2"
+    assert install_rocm_torch.linux_torch_requirement(True) == "torch==2.11.0+cu130"
+
+
+def test_windows_amd_wheel_keeps_vendor_torch_version():
+    assert "torch-2.9.1%2Brocm7.2.1" in install_rocm_torch.AMD_TORCH_URL

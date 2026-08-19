@@ -275,6 +275,11 @@ def is_rocm_build() -> bool:
     return bool(getattr(torch.version, "hip", None))
 
 
+def _uses_cuda_device(device: str) -> bool:
+    """Return whether a configured device can select a CUDA/HIP accelerator."""
+    return device == "auto" or device.startswith("cuda")
+
+
 def validate_args(parsed_args):
     """Validate config-derived values because argparse choices do not validate defaults."""
     if is_rocm_build():
@@ -307,6 +312,31 @@ def validate_args(parsed_args):
         active_qwen_devices.append(parsed_args.embedding_device)
     if reranking_model == "qwen":
         active_qwen_devices.append(parsed_args.rerank_device)
+
+    # Turing is supported by the CUDA 13 wheels, but it has no native BF16.
+    # Avoid model-load/runtime failures by selecting FP16 when any active model
+    # targets a CUDA device whose hardware does not support BF16.
+    if torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+        if (
+            getattr(parsed_args, "qwen_compute_dtype", None) == "bfloat16"
+            and any(_uses_cuda_device(device) for device in active_qwen_devices)
+        ):
+            logger.warning(
+                "⚠️  This GPU does not support native bfloat16. Falling back to "
+                "qwen_compute_dtype='float16'."
+            )
+            parsed_args.qwen_compute_dtype = "float16"
+        if (
+            getattr(parsed_args, "nemotron_compute_dtype", None) == "bfloat16"
+            and parsed_args.embedding_model in {"nemotron", "nemotron-3"}
+            and _uses_cuda_device(parsed_args.embedding_device)
+        ):
+            logger.warning(
+                "⚠️  This GPU does not support native bfloat16. Falling back to "
+                "nemotron_compute_dtype='float16'."
+            )
+            parsed_args.nemotron_compute_dtype = "float16"
+
     if parsed_args.qwen_backend.startswith("torch-bnb") and any(device == "cpu" for device in active_qwen_devices):
         logger.warning(
             "⚠️  qwen_backend uses bitsandbytes, but at least one active Qwen device is CPU. "

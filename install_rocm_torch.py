@@ -14,9 +14,10 @@ Windows:
     `uv run --no-sync` (a plain `uv run` would restore the CUDA wheel).
 
 Usage:
-    uv run python install_rocm_torch.py                # install ROCm torch
-    uv run python install_rocm_torch.py --dry-run      # show what would happen
-    uv run python install_rocm_torch.py --restore-cuda # back to CUDA 13.0 (Linux)
+    uv sync --no-install-package torch
+    uv run --no-sync python install_rocm_torch.py                # install ROCm torch
+    uv run --no-sync python install_rocm_torch.py --dry-run      # preview
+    uv run --no-sync python install_rocm_torch.py --restore-cuda # restore CUDA (Linux)
 
 Windows prerequisites (before running):
     uv python pin 3.12
@@ -24,7 +25,7 @@ Windows prerequisites (before running):
     uv run --no-sync python install_rocm_torch.py
 
 References:
-    Linux index contents:  https://download.pytorch.org/whl/rocm6.3
+    Linux index contents:  https://download.pytorch.org/whl/rocm7.2
     Windows wheel source:  https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installryz/windows/install-pytorch.html
 """
 
@@ -38,18 +39,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-# Linux: PyTorch's own index. rocm6.3 is the last index carrying torch 2.9.x;
-# the rocm7.x indexes start at torch 2.10, which this project's pin
-# (torch>=2.9.0,<2.10.0) excludes.
-ROCM_INDEX = "https://download.pytorch.org/whl/rocm6.3"
+# Linux: PyTorch 2.11 is the first shared release published for both ROCm 7.2
+# and CUDA 13.0.
+ROCM_INDEX = "https://download.pytorch.org/whl/rocm7.2"
 CUDA_INDEX = "https://download.pytorch.org/whl/cu130"
-TORCH_VERSION = "2.9.1"
-ROCM_TORCH_VERSION = f"{TORCH_VERSION}+rocm6.3"
+TORCH_VERSION = "2.11.0"
+ROCM_TORCH_VERSION = f"{TORCH_VERSION}+rocm7.2"
 CUDA_TORCH_VERSION = f"{TORCH_VERSION}+cu130"
 
 # Windows: AMD's direct wheel URLs. AMD ships cp312 wheels only, and the
 # torch wheel version must stay inside the project's torch pin.
 AMD_ROCM_VERSION = "7.2.1"
+AMD_WINDOWS_TORCH_VERSION = "2.9.1"
 AMD_BASE = f"https://repo.radeon.com/rocm/windows/rocm-rel-{AMD_ROCM_VERSION}"
 AMD_SDK_URLS = [
     f"{AMD_BASE}/rocm_sdk_core-{AMD_ROCM_VERSION}-py3-none-win_amd64.whl",
@@ -58,7 +59,8 @@ AMD_SDK_URLS = [
     f"{AMD_BASE}/rocm-{AMD_ROCM_VERSION}.tar.gz",
 ]
 AMD_TORCH_URL = (
-    f"{AMD_BASE}/torch-{TORCH_VERSION}%2Brocm{AMD_ROCM_VERSION}-cp312-cp312-win_amd64.whl"
+    f"{AMD_BASE}/torch-{AMD_WINDOWS_TORCH_VERSION}%2Brocm{AMD_ROCM_VERSION}"
+    "-cp312-cp312-win_amd64.whl"
 )
 AMD_REQUIRED_PYTHON = (3, 12)
 
@@ -108,8 +110,8 @@ def linux_torch_requirement(restore_cuda: bool) -> str:
     """Return the exact build uv must select for the requested backend.
 
     uv lockfiles cover every supported platform. Since ROCm wheels only cover
-    Linux x86_64, a loose ``torch`` upgrade can otherwise choose PyPI's
-    cross-platform torch 2.9.1 package (a CUDA 12.8 build on Linux).
+    Linux x86_64, a loose ``torch`` upgrade can otherwise choose a
+    cross-platform CUDA build instead of the requested ROCm build.
     """
     version = CUDA_TORCH_VERSION if restore_cuda else ROCM_TORCH_VERSION
     return f"torch=={version}"
@@ -142,7 +144,7 @@ def require_uv():
 def install_linux(dry_run: bool, restore_cuda: bool) -> None:
     require_uv()
     target = CUDA_INDEX if restore_cuda else ROCM_INDEX
-    label = "CUDA 13.0" if restore_cuda else "ROCm 6.3"
+    label = "Torch 2.11 + CUDA 13.0" if restore_cuda else "Torch 2.11 + ROCm 7.2"
 
     original = PYPROJECT.read_text(encoding="utf-8")
     rewritten = rewrite_extra_index_url(original, target)

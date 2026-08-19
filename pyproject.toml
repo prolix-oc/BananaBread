@@ -33,7 +33,9 @@ dependencies = [
     "uvicorn[standard]>=0.24.0",
     "pydantic>=2.10.0,<3.0.0",
     # Machine learning and AI
-    "torch>=2.9.0,<2.10.0",
+    # Keep AMD's native-Windows 2.9.1 wheel valid while the shared lockfile
+    # selects Torch 2.11 for CUDA, ROCm, macOS, and CPU environments.
+    "torch>=2.9.0,<2.12.0",
     # Nemotron-3 Embed requires Transformers 5.2+ and SentenceTransformers 5.4.1+.
     "transformers>=5.2.0",
     "huggingface-hub>=0.20.0",

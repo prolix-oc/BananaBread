@@ -276,7 +276,7 @@ All available options (grouped by purpose):
 
 ## GPU Setup (Optional)
 
-If you have an NVIDIA or AMD GPU, you can run models on it for significantly faster inference. NVIDIA works out of the box via the CUDA wheel index pinned in `pyproject.toml`. AMD uses PyTorch's ROCm builds — see [AMD GPUs (ROCm)](#amd-gpus-rocm).
+If you have an NVIDIA or AMD GPU, you can run models on it for significantly faster inference. NVIDIA Turing and newer GPUs work out of the box with the Torch 2.11 + CUDA 13 wheel pinned in `uv.lock`. AMD uses PyTorch's ROCm builds — see [AMD GPUs (ROCm)](#amd-gpus-rocm). On GPUs without native bfloat16 support, including Turing, BananaBread automatically changes model compute dtype to float16.
 
 ### Basic GPU usage
 
@@ -297,17 +297,18 @@ PyTorch's ROCm builds expose AMD GPUs through the same `cuda` device API, so eve
 Run the installer — it rewrites the PyTorch index in `pyproject.toml` to the ROCm index, re-locks, syncs, and verifies the result:
 
 ```bash
-uv run python install_rocm_torch.py --dry-run   # preview the changes first if you like
-uv run python install_rocm_torch.py
+uv sync --no-install-package torch                    # avoid downloading CUDA first
+uv run --no-sync python install_rocm_torch.py --dry-run
+uv run --no-sync python install_rocm_torch.py
 ```
 
 Because the lockfile itself now contains the ROCm build, plain `uv run bananabread-emb --embedding-device cuda` works afterwards — no extra flags. To switch back to NVIDIA CUDA later: `uv run python install_rocm_torch.py --restore-cuda`.
 
-Why the index matters: it must actually contain the torch version BananaBread pins (`torch>=2.9.0,<2.10.0`). The installer asks uv for the exact `2.9.1+rocm6.3` build so a missing or incompatible ROCm wheel produces a resolution error instead of silently falling back to the CUDA-flavored wheel from PyPI. For torch 2.9.x that index is `rocm6.3`; the newer `rocm7.x` indexes only carry torch 2.10 and up (update the script's `ROCM_INDEX` and `ROCM_TORCH_VERSION` constants if the project's torch pin ever moves to 2.10+). The official ROCm wheels are Linux x86_64 and target recent Radeon (RX 7000/9000 series) and Instinct GPUs; older cards aren't officially covered.
+Why the index matters: the installer asks uv for the exact `2.11.0+rocm7.2` build so a missing or incompatible ROCm wheel produces a resolution error instead of silently falling back to a CUDA build. The official ROCm wheels are Linux x86_64. AMD supports the RX 7900 XTX (`gfx1100`), RX 9070 series (`gfx1201`), and RX 9060 series (`gfx1200`) on Ubuntu 24.04.3, Ubuntu 22.04.5, RHEL 10.1, and RHEL 9.7; see the [ROCm 7.2 system requirements](https://rocm.docs.amd.com/projects/install-on-linux/en/docs-7.2.0/reference/system-requirements.html#supported-gpus).
 
 #### Windows
 
-Windows AMD users are no longer stuck on CPU: AMD ships an official **PyTorch on Windows** build (ROCm 7.2.1, `torch 2.9.1+rocm7.2.1` — a version match for this project's pin). The wheels aren't on a pip index, though; they're direct downloads from `repo.radeon.com`, so `install_rocm_torch.py` swaps them into the venv for you:
+Windows AMD users are no longer stuck on CPU: AMD ships an official **PyTorch on Windows** build (ROCm 7.2.1, `torch 2.9.1+rocm7.2.1`). This remains a supported exception to BananaBread's shared Torch 2.11 baseline. The wheels aren't on a pip index, though; they're direct downloads from `repo.radeon.com`, so `install_rocm_torch.py` swaps them into the venv for you:
 
 ```powershell
 # If you already have a .venv from the NVIDIA/CUDA setup, delete it first.
@@ -337,7 +338,7 @@ Other Windows notes from AMD: it's inference-only (fine for BananaBread), and LL
 
 Flash Attention 2 makes GPU inference faster and uses less memory. It's optional — everything works without it, just a bit slower on GPU.
 
-**Requires:** NVIDIA GPU with compute capability 7.5+ (RTX 2000 series or newer). The prebuilt wheels below are CUDA builds — on AMD, leave Flash Attention off; BananaBread falls back to SDPA automatically.
+**Requires:** NVIDIA Ampere GPU or newer (RTX 3000 series or newer). Turing GPUs remain supported by BananaBread but use SDPA instead. The prebuilt wheels below are CUDA builds — on AMD, leave Flash Attention off; BananaBread falls back to SDPA automatically.
 
 #### Installing a prebuilt wheel
 
@@ -361,10 +362,10 @@ You can also install a wheel directly:
 
 ```bash
 # Windows + Python 3.13
-pip install https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.3+cu130torch2.9.1cxx11abiTRUE-cp313-cp313-win_amd64.whl
+pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3%2Bcu130torch2.11-cp313-cp313-win_amd64.whl
 
 # Windows + Python 3.12
-pip install https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.8.3+cu130torch2.9.1cxx11abiTRUE-cp312-cp312-win_amd64.whl
+pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3%2Bcu130torch2.11-cp312-cp312-win_amd64.whl
 ```
 
 Once installed, enable it:

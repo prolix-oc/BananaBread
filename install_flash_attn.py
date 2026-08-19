@@ -17,24 +17,23 @@ import argparse
 
 FLASH_ATTN_VERSION = "2.8.3"
 
-# Windows wheels: https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows
-# Linux wheels:   https://github.com/mjun0812/flash-attention-prebuild-wheels (v0.7.16)
+# Wheels: https://github.com/mjun0812/flash-attention-prebuild-wheels
 WHEEL_URLS = {
     ("win32", "3.12"): (
-        "https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/"
-        "flash_attn-2.8.3+cu130torch2.9.1cxx11abiTRUE-cp312-cp312-win_amd64.whl"
+        "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/"
+        "flash_attn-2.8.3%2Bcu130torch2.11-cp312-cp312-win_amd64.whl"
     ),
     ("win32", "3.13"): (
-        "https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/"
-        "flash_attn-2.8.3+cu130torch2.9.1cxx11abiTRUE-cp313-cp313-win_amd64.whl"
+        "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/"
+        "flash_attn-2.8.3%2Bcu130torch2.11-cp313-cp313-win_amd64.whl"
     ),
     ("linux_x86_64", "3.12"): (
-        "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/"
-        "flash_attn-2.8.3+cu130torch2.9-cp312-cp312-linux_x86_64.whl"
+        "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/"
+        "flash_attn-2.8.3%2Bcu130torch2.11-cp312-cp312-linux_x86_64.whl"
     ),
     ("linux_x86_64", "3.13"): (
-        "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/"
-        "flash_attn-2.8.3+cu130torch2.9-cp313-cp313-linux_x86_64.whl"
+        "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/"
+        "flash_attn-2.8.3%2Bcu130torch2.11-cp313-cp313-linux_x86_64.whl"
     ),
 }
 
@@ -146,10 +145,10 @@ def main():
             f"  wheel built for your CUDA version.\n"
         )
 
-    if torch_ver and not torch_ver.startswith("2.9"):
+    if torch_ver and not torch_ver.startswith("2.11"):
         print(
             f"WARNING: Your PyTorch version is {torch_ver}, but the precompiled\n"
-            f"  wheels target PyTorch 2.9.x. Consider aligning your PyTorch version.\n"
+            f"  wheels target PyTorch 2.11.x. Consider aligning your PyTorch version.\n"
         )
 
     # --- Look up the wheel ---

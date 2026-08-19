@@ -3,6 +3,14 @@ from typing import Any
 
 from huggingface_hub import HfApi, snapshot_download
 
+from bananabread.utils import route_tqdm_to_logger
+
+# Hub renders per-file tqdm bars during downloads and transformers renders one
+# while loading weights; both garble the structured log.  Both go through the
+# shared tqdm.auto base class, so route them to the logger before any
+# download runs (every download path imports this module first).
+route_tqdm_to_logger()
+
 
 EMBEDDING_PIPELINE_TAGS = {"feature-extraction", "sentence-similarity"}
 EMBEDDING_TAGS = {

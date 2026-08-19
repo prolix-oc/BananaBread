@@ -77,6 +77,7 @@ def test_validate_args_keeps_bnb_backends_without_rocme(monkeypatch):
 
 # ----- install_rocm_torch.py: pyproject rewrite -----
 
+
 def test_rewrite_replaces_url_and_preserves_other_keys():
     text = (
         "[tool.uv]\n"
@@ -113,3 +114,8 @@ def test_rewrite_is_idempotent():
     once = install_rocm_torch.rewrite_extra_index_url(text, "b")
     twice = install_rocm_torch.rewrite_extra_index_url(once, "b")
     assert once == twice
+
+
+def test_linux_lock_requirement_selects_exact_backend_build():
+    assert install_rocm_torch.linux_torch_requirement(False) == "torch==2.9.1+rocm6.3"
+    assert install_rocm_torch.linux_torch_requirement(True) == "torch==2.9.1+cu130"

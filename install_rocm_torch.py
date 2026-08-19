@@ -43,6 +43,9 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 # (torch>=2.9.0,<2.10.0) excludes.
 ROCM_INDEX = "https://download.pytorch.org/whl/rocm6.3"
 CUDA_INDEX = "https://download.pytorch.org/whl/cu130"
+TORCH_VERSION = "2.9.1"
+ROCM_TORCH_VERSION = f"{TORCH_VERSION}+rocm6.3"
+CUDA_TORCH_VERSION = f"{TORCH_VERSION}+cu130"
 
 # Windows: AMD's direct wheel URLs. AMD ships cp312 wheels only, and the
 # torch wheel version must stay inside the project's torch pin.
@@ -55,7 +58,7 @@ AMD_SDK_URLS = [
     f"{AMD_BASE}/rocm-{AMD_ROCM_VERSION}.tar.gz",
 ]
 AMD_TORCH_URL = (
-    f"{AMD_BASE}/torch-2.9.1%2Brocm{AMD_ROCM_VERSION}-cp312-cp312-win_amd64.whl"
+    f"{AMD_BASE}/torch-{TORCH_VERSION}%2Brocm{AMD_ROCM_VERSION}-cp312-cp312-win_amd64.whl"
 )
 AMD_REQUIRED_PYTHON = (3, 12)
 
@@ -96,9 +99,20 @@ def rewrite_extra_index_url(text: str, url: str) -> str:
         raise RuntimeError(
             "No `extra-index-url` key found under [tool.uv] in pyproject.toml.\n"
             "Add one first, for example:\n\n"
-            f"[tool.uv]\nextra-index-url = [\"{url}\"]"
+            f'[tool.uv]\nextra-index-url = ["{url}"]'
         )
     return newline.join(out) + newline
+
+
+def linux_torch_requirement(restore_cuda: bool) -> str:
+    """Return the exact build uv must select for the requested backend.
+
+    uv lockfiles cover every supported platform. Since ROCm wheels only cover
+    Linux x86_64, a loose ``torch`` upgrade can otherwise choose PyPI's
+    cross-platform torch 2.9.1 package (a CUDA 12.8 build on Linux).
+    """
+    version = CUDA_TORCH_VERSION if restore_cuda else ROCM_TORCH_VERSION
+    return f"torch=={version}"
 
 
 def run_cmd(cmd, **kwargs):
@@ -145,7 +159,7 @@ def install_linux(dry_run: bool, restore_cuda: bool) -> None:
         f"assert {suffix!r} in v, v; print('torch', v, 'ready')"
     )
     steps = [
-        ["uv", "lock", "--upgrade-package", "torch"],
+        ["uv", "lock", "--upgrade-package", linux_torch_requirement(restore_cuda)],
         ["uv", "sync"],
     ]
 
@@ -213,10 +227,7 @@ def install_windows(dry_run: bool) -> None:
         print("\n[dry-run] Would execute:")
         for step in steps:
             print(f"  {' '.join(step)}")
-        print(
-            f"  {sys.executable} -c "
-            f"'import torch; assert torch.cuda.is_available()'"
-        )
+        print(f"  {sys.executable} -c " f"'import torch; assert torch.cuda.is_available()'")
         return
 
     for step in steps:

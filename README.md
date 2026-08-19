@@ -303,7 +303,7 @@ uv run python install_rocm_torch.py
 
 Because the lockfile itself now contains the ROCm build, plain `uv run bananabread-emb --embedding-device cuda` works afterwards — no extra flags. To switch back to NVIDIA CUDA later: `uv run python install_rocm_torch.py --restore-cuda`.
 
-Why the index matters: it must actually contain the torch version BananaBread pins (`torch>=2.9.0,<2.10.0`), otherwise uv silently falls back to the CUDA-flavored wheel from PyPI — an index that doesn't carry the pinned version is worse than an error, it's an invisible wrong install. For torch 2.9.x that index is `rocm6.3`; the newer `rocm7.x` indexes only carry torch 2.10 and up (update the script's `ROCM_INDEX` constant if the project's torch pin ever moves to 2.10+). The official ROCm wheels are Linux x86_64 and target recent Radeon (RX 7000/9000 series) and Instinct GPUs; older cards aren't officially covered.
+Why the index matters: it must actually contain the torch version BananaBread pins (`torch>=2.9.0,<2.10.0`). The installer asks uv for the exact `2.9.1+rocm6.3` build so a missing or incompatible ROCm wheel produces a resolution error instead of silently falling back to the CUDA-flavored wheel from PyPI. For torch 2.9.x that index is `rocm6.3`; the newer `rocm7.x` indexes only carry torch 2.10 and up (update the script's `ROCM_INDEX` and `ROCM_TORCH_VERSION` constants if the project's torch pin ever moves to 2.10+). The official ROCm wheels are Linux x86_64 and target recent Radeon (RX 7000/9000 series) and Instinct GPUs; older cards aren't officially covered.
 
 #### Windows
 

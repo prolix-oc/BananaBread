@@ -11,6 +11,8 @@ from typing import Any, Sequence
 import torch
 from sentence_transformers import SentenceTransformer
 
+from bananabread.models.metal import enable_batched_metal_linears
+
 
 NEMOTRON_MODEL_REPO = "nvidia/llama-nemotron-embed-1b-v2"
 NEMOTRON_3_MODEL_REPOS = {
@@ -50,6 +52,9 @@ class NemotronEmbeddingModel:
             trust_remote_code=True,
             model_kwargs=model_kwargs,
         )
+        self.metal_layer_count = 0
+        if backend.startswith("torch-metal"):
+            self.metal_layer_count = enable_batched_metal_linears(self.model)
         # Fast Hugging Face tokenizers mutate internal state during tokenization.
         # SentenceTransformers does not lock that state, so concurrent requests
         # against one model instance can otherwise fail with "Already borrowed".
@@ -70,6 +75,23 @@ class NemotronEmbeddingModel:
     def _model_kwargs(self, device: str) -> dict[str, Any]:
         if self.backend == "torch":
             return {}
+        if self.backend in {"torch-metal-8bit", "torch-metal-4bit"}:
+            if not device.lower().startswith("mps"):
+                raise ValueError("Metal Nemotron backends require an MPS device")
+            try:
+                from transformers import MetalConfig
+            except ImportError as exc:
+                raise ImportError(
+                    "Metal quantization requires Transformers 5.15 or newer and the "
+                    "metal-quant extra: uv pip install bananabread-emb[metal-quant]"
+                ) from exc
+
+            bits = 8 if self.backend == "torch-metal-8bit" else 4
+            return {
+                "dtype": self.compute_dtype,
+                "device_map": {"": device},
+                "quantization_config": MetalConfig(bits=bits, group_size=64),
+            }
         if self.backend not in {"torch-bnb-8bit", "torch-bnb-4bit"}:
             raise ValueError(f"Unsupported Nemotron backend: {self.backend}")
         if device.lower() != "auto" and not device.lower().startswith("cuda"):
@@ -153,6 +175,9 @@ class Nemotron3EmbeddingModel(NemotronEmbeddingModel):
             device=None if "device_map" in model_kwargs else device,
             model_kwargs=model_kwargs,
         )
+        self.metal_layer_count = 0
+        if backend.startswith("torch-metal"):
+            self.metal_layer_count = enable_batched_metal_linears(self.model)
         self.tokenizer_lock = threading.RLock()
         try:
             self.tokenizer = self.model[0].tokenizer

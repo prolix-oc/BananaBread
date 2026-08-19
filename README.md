@@ -122,6 +122,9 @@ uv run bananabread-emb --embedding-model qwen --qwen-size 4B
 # Load Qwen with GPU 8-bit weight quantization
 uv run --extra cuda-quant bananabread-emb --embedding-model qwen --qwen-size 4B --embedding-device cuda --qwen-backend torch-bnb-8bit
 
+# Load Qwen with 8-bit Metal weight quantization on Apple Silicon
+uv run --extra metal-quant bananabread-emb --embedding-model qwen --qwen-size 4B --embedding-device mps --qwen-backend torch-metal-8bit
+
 # Run a pre-exported INT8 ONNX Qwen model on CPU
 uv run --extra onnx bananabread-emb --embedding-model qwen --qwen-backend onnx-int8 --qwen-onnx-model-path ./models/qwen3-embedding-4b-int8-onnx
 
@@ -157,7 +160,7 @@ curl -X POST http://localhost:8008/v1/embeddings \
 
 Nemotron requires NVIDIA's custom bidirectional-Llama implementation, so this dedicated model selector enables `trust_remote_code` only for NVIDIA's fixed model repository. Review the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/) before use.
 
-For lower VRAM use, the dedicated bitsandbytes backends quantize the model weights on NVIDIA CUDA or AMD ROCm GPUs (separate from the response-vector `quant` option):
+For lower accelerator-memory use, the dedicated backends quantize the model weights with bitsandbytes on NVIDIA CUDA or AMD ROCm, or with Metal kernels on Apple Silicon (separate from the response-vector `quant` option):
 
 ```bash
 # 8-bit weights
@@ -165,6 +168,9 @@ uv run --extra cuda-quant bananabread-emb --embedding-model nemotron --nemotron-
 
 # 4-bit NF4 weights with BF16 compute
 uv run --extra cuda-quant bananabread-emb --embedding-model nemotron --nemotron-backend torch-bnb-4bit --nemotron-compute-dtype bfloat16 --embedding-device cuda --reranking-model none
+
+# Apple Silicon Metal 8-bit
+uv run --extra metal-quant bananabread-emb --embedding-model nemotron --nemotron-backend torch-metal-8bit --embedding-device mps --reranking-model none
 ```
 
 Nemotron defaults to embedding-only mode; use `--reranking-model mixedbread` only when you need reranking too. For any model, `--reranking-model none` disables reranking. The `/v1/rerank` endpoint then returns HTTP 503 instead of loading a reranker. Nemotron also serializes requests that share one model instance to avoid the Hugging Face fast-tokenizer `RuntimeError: Already borrowed`; use `num_concurrent_embedding` greater than one on CUDA to load independent model instances when you need parallel inference.
@@ -220,9 +226,9 @@ All available options (grouped by purpose):
 | `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, `"nemotron"`, `"nemotron-3"`, or `"hf"` |
 | `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, `"none"`, or `null` (auto: Qwen uses Qwen, either Nemotron selector is disabled, otherwise MixedBread) |
 | `qwen_size` | `"0.6B"` | Qwen model size: `"0.6B"`, `"4B"`, or `"8B"` |
-| `qwen_backend` | `"torch"` | Qwen runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, or `"onnx-int8"` |
+| `qwen_backend` | `"torch"` | Qwen runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, `"torch-metal-8bit"`, `"torch-metal-4bit"`, or `"onnx-int8"` |
 | `qwen_compute_dtype` | `"bfloat16"` | Compute dtype for torch Qwen backends: `"bfloat16"`, `"float16"`, or `"float32"` |
-| `nemotron_backend` | `"torch"` | Nemotron runtime: `"torch"`, `"torch-bnb-8bit"`, or `"torch-bnb-4bit"` |
+| `nemotron_backend` | `"torch"` | Nemotron runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, `"torch-metal-8bit"`, or `"torch-metal-4bit"` |
 | `nemotron_compute_dtype` | `"bfloat16"` | Compute dtype for Nemotron torch backends |
 | `nemotron_size` | `"1B"` | Nemotron-3 checkpoint size: `"1B"` or `"8B"` |
 | `qwen_onnx_model_path` | `null` | Local `.onnx` file or directory for `qwen_backend="onnx-int8"` |
@@ -235,7 +241,7 @@ All available options (grouped by purpose):
 | `hf_model_revision` | `null` | Optional branch, tag, or commit SHA for `hf_model_slug` |
 | `hf_access_token` | `null` | Optional Hugging Face token for private or gated model metadata/downloads |
 | **Device placement** | | |
-| `embedding_device` | `"cpu"` | `"cpu"`, `"cuda"`, `"cuda:0"`, etc. |
+| `embedding_device` | `"cpu"` | `"cpu"`, `"cuda"`, `"cuda:0"`, or `"mps"` |
 | `rerank_device` | `"cpu"` | Same options as above |
 | **Embedding cache** | | |
 | `cache_limit` | `1024` | Max cache size in MB for each cache (embedding and rerank) |
@@ -276,7 +282,7 @@ All available options (grouped by purpose):
 
 ## GPU Setup (Optional)
 
-If you have an NVIDIA or AMD GPU, you can run models on it for significantly faster inference. NVIDIA Turing and newer GPUs work out of the box with the Torch 2.11 + CUDA 13 wheel pinned in `uv.lock`. AMD uses PyTorch's ROCm builds — see [AMD GPUs (ROCm)](#amd-gpus-rocm). On GPUs without native bfloat16 support, including Turing, BananaBread automatically changes model compute dtype to float16.
+If you have an NVIDIA or AMD GPU, or an Apple Silicon Mac, you can run models on its accelerator. NVIDIA Turing and newer GPUs work out of the box with the Torch 2.11 + CUDA 13 wheel pinned in `uv.lock`. AMD uses PyTorch's ROCm builds — see [AMD GPUs (ROCm)](#amd-gpus-rocm). Apple Silicon uses PyTorch MPS — see [Apple Silicon (Metal)](#apple-silicon-metal). On GPUs without native bfloat16 support, including Turing, BananaBread automatically changes model compute dtype to float16.
 
 ### Basic GPU usage
 
@@ -287,6 +293,23 @@ uv run bananabread-emb --embedding-device cuda --rerank-device cuda
 # Or a specific GPU
 uv run bananabread-emb --embedding-device cuda:0 --rerank-device cuda:1
 ```
+
+### Apple Silicon (Metal)
+
+Apple Silicon Macs can run Qwen, Nemotron, and Nemotron-3 on MPS with optional 8-bit or 4-bit affine weight quantization. The Metal kernels keep quantized linear weights on the GPU and are downloaded from Hugging Face on first use. Use 8-bit when embedding quality is the priority; 4-bit saves more unified memory but should be evaluated against your retrieval corpus.
+
+```bash
+# Qwen 8-bit Metal
+uv run --extra metal-quant bananabread-emb --embedding-model qwen --qwen-size 4B --embedding-device mps --qwen-backend torch-metal-8bit
+
+# Qwen 4-bit Metal
+uv run --extra metal-quant bananabread-emb --embedding-model qwen --qwen-size 4B --embedding-device mps --qwen-backend torch-metal-4bit
+
+# Nemotron-3 8-bit Metal
+uv run --extra metal-quant bananabread-emb --embedding-model nemotron-3 --nemotron-size 1B --embedding-device mps --nemotron-backend torch-metal-8bit --reranking-model none
+```
+
+Metal quantization requires an Apple Silicon Mac with MPS available. Flash Attention 2 is not used on Metal; Transformers' MPS attention implementation remains active. Keep model concurrency at `1` unless the Mac has enough unified memory for additional model copies.
 
 ### AMD GPUs (ROCm)
 

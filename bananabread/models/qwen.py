@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
 from bananabread.config import args, logger, is_rocm_build
+from bananabread.models.metal import enable_batched_metal_linears
 
 
 def _check_flash_attention_available() -> tuple[bool, str]:
@@ -305,6 +306,69 @@ class QwenBnbModel(QwenTorchModel):
         logger.info(f"Qwen bitsandbytes model initialized on {self.device} with backend={self.backend_name}")
 
 
+class QwenMetalModel(QwenTorchModel):
+    """Qwen backend using Transformers' low-bit Metal kernels on Apple Silicon."""
+
+    def __init__(
+        self,
+        model_name: str,
+        device_arg: str = "mps",
+        quantization_bits: int = 8,
+        use_flash_attention: bool = False,
+        compute_dtype: str = "bfloat16",
+        max_length: int = 8192,
+    ):
+        if not device_arg.lower().startswith("mps"):
+            raise ValueError("Metal Qwen backends require an MPS device")
+        if quantization_bits not in {4, 8}:
+            raise ValueError("Metal Qwen backends support 4-bit or 8-bit quantization")
+
+        try:
+            from transformers import MetalConfig
+        except ImportError as exc:
+            raise ImportError(
+                "Metal quantization requires Transformers 5.15 or newer and the "
+                "metal-quant extra: uv pip install bananabread-emb[metal-quant]"
+            ) from exc
+
+        if use_flash_attention:
+            logger.warning(
+                "Flash Attention 2 is unavailable for Metal quantization. "
+                "Falling back to the default MPS attention implementation."
+            )
+
+        self.backend_name = f"torch-metal-{quantization_bits}bit"
+        self.device_arg = device_arg
+        self.compute_dtype = _torch_dtype(compute_dtype)
+
+        logger.info(f"Loading Qwen {quantization_bits}-bit Metal model: {model_name}")
+        BaseQwenModel.__init__(self, model_name, max_length=max_length)
+
+        quantization_config = MetalConfig(bits=quantization_bits, group_size=64)
+        try:
+            self.model = AutoModel.from_pretrained(
+                model_name,
+                dtype=self.compute_dtype,
+                device_map={"": device_arg},
+                quantization_config=quantization_config,
+            )
+        except ImportError as exc:
+            if "kernel" in str(exc).lower():
+                raise ImportError(
+                    "Metal quantization requires the metal-quant extra: "
+                    "uv pip install bananabread-emb[metal-quant]"
+                ) from exc
+            raise
+
+        self.device = self.model.device
+        self.metal_layer_count = enable_batched_metal_linears(self.model)
+        self.model.eval()
+        logger.info(
+            f"Qwen Metal model initialized on {self.device} with backend={self.backend_name} "
+            f"({self.metal_layer_count} quantized linear layers)"
+        )
+
+
 class QwenOnnxModel(BaseQwenModel):
     """Qwen embedding backend using a local ONNX Runtime model."""
 
@@ -465,6 +529,24 @@ def load_qwen_model(
         )
     if backend == "torch-bnb-4bit":
         return QwenBnbModel(
+            model_name,
+            device_arg=device_arg,
+            quantization_bits=4,
+            use_flash_attention=use_flash_attention,
+            compute_dtype=compute_dtype,
+            max_length=max_length,
+        )
+    if backend == "torch-metal-8bit":
+        return QwenMetalModel(
+            model_name,
+            device_arg=device_arg,
+            quantization_bits=8,
+            use_flash_attention=use_flash_attention,
+            compute_dtype=compute_dtype,
+            max_length=max_length,
+        )
+    if backend == "torch-metal-4bit":
+        return QwenMetalModel(
             model_name,
             device_arg=device_arg,
             quantization_bits=4,

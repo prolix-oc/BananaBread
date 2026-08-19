@@ -203,9 +203,22 @@ CONFIG_CHOICES = {
     "embedding_model": {"mixedbread", "qwen", "nemotron", "nemotron-3", "hf"},
     "reranking_model": {"mixedbread", "qwen", "none", None},
     "qwen_size": {"0.6B", "4B", "8B"},
-    "qwen_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit", "onnx-int8"},
+    "qwen_backend": {
+        "torch",
+        "torch-bnb-8bit",
+        "torch-bnb-4bit",
+        "torch-metal-8bit",
+        "torch-metal-4bit",
+        "onnx-int8",
+    },
     "qwen_compute_dtype": {"bfloat16", "float16", "float32"},
-    "nemotron_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit"},
+    "nemotron_backend": {
+        "torch",
+        "torch-bnb-8bit",
+        "torch-bnb-4bit",
+        "torch-metal-8bit",
+        "torch-metal-4bit",
+    },
     "nemotron_compute_dtype": {"bfloat16", "float16", "float32"},
     "nemotron_size": {"1B", "8B"},
     "quant": {"standard", "ubinary", "int8"},
@@ -344,6 +357,15 @@ def validate_args(parsed_args):
         )
         parsed_args.qwen_backend = "torch"
 
+    if parsed_args.qwen_backend.startswith("torch-metal") and any(
+        not device.startswith("mps") for device in active_qwen_devices
+    ):
+        logger.warning(
+            "⚠️  qwen_backend uses Metal quantization, but at least one active Qwen "
+            "device is not MPS. Falling back to qwen_backend='torch'."
+        )
+        parsed_args.qwen_backend = "torch"
+
     nemotron_device = parsed_args.embedding_device
     if (
         parsed_args.embedding_model in {"nemotron", "nemotron-3"}
@@ -355,6 +377,17 @@ def validate_args(parsed_args):
             "⚠️  nemotron_backend uses bitsandbytes, but the embedding device is not "
             "a CUDA/HIP accelerator. "
             "Falling back to nemotron_backend='torch'."
+        )
+        parsed_args.nemotron_backend = "torch"
+
+    if (
+        parsed_args.embedding_model in {"nemotron", "nemotron-3"}
+        and parsed_args.nemotron_backend.startswith("torch-metal")
+        and not nemotron_device.startswith("mps")
+    ):
+        logger.warning(
+            "⚠️  nemotron_backend uses Metal quantization, but the embedding device "
+            "is not MPS. Falling back to nemotron_backend='torch'."
         )
         parsed_args.nemotron_backend = "torch"
 
@@ -466,11 +499,11 @@ def parse_args():
                        help=f"Embedding model to use (default: {DEFAULTS['embedding_model']})")
     parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default=DEFAULTS["qwen_size"],
                        help=f"Qwen model size to use when --embedding-model=qwen (default: {DEFAULTS['qwen_size']})")
-    parser.add_argument("--qwen-backend", type=str, choices=['torch', 'torch-bnb-8bit', 'torch-bnb-4bit', 'onnx-int8'], default=DEFAULTS["qwen_backend"],
+    parser.add_argument("--qwen-backend", type=str, choices=['torch', 'torch-bnb-8bit', 'torch-bnb-4bit', 'torch-metal-8bit', 'torch-metal-4bit', 'onnx-int8'], default=DEFAULTS["qwen_backend"],
                        help=f"Qwen runtime backend (default: {DEFAULTS['qwen_backend']})")
     parser.add_argument("--qwen-compute-dtype", type=str, choices=['bfloat16', 'float16', 'float32'], default=DEFAULTS["qwen_compute_dtype"],
                        help=f"Compute dtype for torch Qwen backends (default: {DEFAULTS['qwen_compute_dtype']})")
-    parser.add_argument("--nemotron-backend", type=str, choices=['torch', 'torch-bnb-8bit', 'torch-bnb-4bit'], default=DEFAULTS["nemotron_backend"],
+    parser.add_argument("--nemotron-backend", type=str, choices=['torch', 'torch-bnb-8bit', 'torch-bnb-4bit', 'torch-metal-8bit', 'torch-metal-4bit'], default=DEFAULTS["nemotron_backend"],
                        help=f"Nemotron runtime backend (default: {DEFAULTS['nemotron_backend']})")
     parser.add_argument("--nemotron-compute-dtype", type=str, choices=['bfloat16', 'float16', 'float32'], default=DEFAULTS["nemotron_compute_dtype"],
                        help=f"Compute dtype for Nemotron torch backends (default: {DEFAULTS['nemotron_compute_dtype']})")

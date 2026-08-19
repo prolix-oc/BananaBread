@@ -36,8 +36,9 @@ dependencies = [
     # Keep AMD's native-Windows 2.9.1 wheel valid while the shared lockfile
     # selects Torch 2.11 for CUDA, ROCm, macOS, and CPU environments.
     "torch>=2.9.0,<2.12.0",
-    # Nemotron-3 Embed requires Transformers 5.2+ and SentenceTransformers 5.4.1+.
-    "transformers>=5.2.0",
+    # MetalConfig requires Transformers 5.15+; Nemotron-3 requires
+    # SentenceTransformers 5.4.1+.
+    "transformers>=5.15.0",
     "huggingface-hub>=0.20.0",
     "sentence-transformers>=5.4.1",
     "mxbai-rerank>=0.1.0",
@@ -50,6 +51,9 @@ dependencies = [
 [project.optional-dependencies]
 cuda-quant = [
     "bitsandbytes>=0.50.1",
+]
+metal-quant = [
+    "kernels>=0.16.0",
 ]
 onnx = [
     "onnxruntime>=1.18.0",

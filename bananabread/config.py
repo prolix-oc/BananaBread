@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 from typing import Dict, Any
 from transformers import set_seed
+import torch
 
 # ----- Enhanced Logging Configuration -----
 class ColoredFormatter(logging.Formatter):
@@ -263,9 +264,21 @@ def load_config(config_path: Path) -> Dict[str, Any]:
     else:
         return create_default_config(config_path)
 
+def is_rocm_build() -> bool:
+    """True when the installed PyTorch is an AMD ROCm build (HIP runtime)."""
+    return bool(getattr(torch.version, "hip", None))
+
 
 def validate_args(parsed_args):
     """Validate config-derived values because argparse choices do not validate defaults."""
+    if is_rocm_build():
+        device_name = (
+            torch.cuda.get_device_name(0) if torch.cuda.is_available() else "unavailable"
+        )
+        logger.info(
+            f"🖥️  AMD ROCm {torch.version.hip} build detected (device: {device_name}). "
+            "AMD GPUs use the same 'cuda' device strings as NVIDIA."
+        )
     for key, choices in CONFIG_CHOICES.items():
         value = getattr(parsed_args, key, None)
         if value not in choices:
@@ -295,6 +308,14 @@ def validate_args(parsed_args):
         )
         parsed_args.qwen_backend = "torch"
 
+    if parsed_args.qwen_backend.startswith("torch-bnb") and is_rocm_build():
+        logger.warning(
+            "⚠️  qwen_backend uses bitsandbytes, but the installed PyTorch is an AMD "
+            "ROCm build. bitsandbytes quantization is NVIDIA-only; falling back to "
+            "qwen_backend='torch'."
+        )
+        parsed_args.qwen_backend = "torch"
+
     nemotron_device = parsed_args.embedding_device
     if (
         parsed_args.embedding_model in {"nemotron", "nemotron-3"}
@@ -305,6 +326,18 @@ def validate_args(parsed_args):
         logger.warning(
             "⚠️  nemotron_backend uses bitsandbytes, but the embedding device is not CUDA. "
             "Falling back to nemotron_backend='torch'."
+        )
+        parsed_args.nemotron_backend = "torch"
+
+    if (
+        parsed_args.embedding_model in {"nemotron", "nemotron-3"}
+        and parsed_args.nemotron_backend.startswith("torch-bnb")
+        and is_rocm_build()
+    ):
+        logger.warning(
+            "⚠️  nemotron_backend uses bitsandbytes, but the installed PyTorch is an "
+            "AMD ROCm build. bitsandbytes quantization is NVIDIA-only; falling back "
+            "to nemotron_backend='torch'."
         )
         parsed_args.nemotron_backend = "torch"
 

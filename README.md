@@ -276,7 +276,7 @@ All available options (grouped by purpose):
 
 ## GPU Setup (Optional)
 
-If you have an NVIDIA GPU, you can run models on it for significantly faster inference.
+If you have an NVIDIA or AMD GPU, you can run models on it for significantly faster inference. NVIDIA works out of the box via the CUDA wheel index pinned in `pyproject.toml`. AMD uses PyTorch's ROCm builds — see [AMD GPUs (ROCm)](#amd-gpus-rocm).
 
 ### Basic GPU usage
 
@@ -288,11 +288,56 @@ uv run bananabread-emb --embedding-device cuda --rerank-device cuda
 uv run bananabread-emb --embedding-device cuda:0 --rerank-device cuda:1
 ```
 
+### AMD GPUs (ROCm)
+
+PyTorch's ROCm builds expose AMD GPUs through the same `cuda` device API, so every `--embedding-device cuda` / `--rerank-device cuda` flag works unchanged, and BananaBread detects ROCm builds at startup. Two AMD caveats are handled automatically: Flash Attention 2 prebuilt wheels are CUDA builds (BananaBread disables FA2 on ROCm builds and falls back to SDPA), and the `cuda-quant` extra (bitsandbytes) is NVIDIA-only (BananaBread falls back to the plain `torch` backend on ROCm).
+
+#### Linux
+
+Run the installer — it rewrites the PyTorch index in `pyproject.toml` to the ROCm index, re-locks, syncs, and verifies the result:
+
+```bash
+uv run python install_rocm_torch.py --dry-run   # preview the changes first if you like
+uv run python install_rocm_torch.py
+```
+
+Because the lockfile itself now contains the ROCm build, plain `uv run bananabread-emb --embedding-device cuda` works afterwards — no extra flags. To switch back to NVIDIA CUDA later: `uv run python install_rocm_torch.py --restore-cuda`.
+
+Why the index matters: it must actually contain the torch version BananaBread pins (`torch>=2.9.0,<2.10.0`), otherwise uv silently falls back to the CUDA-flavored wheel from PyPI — an index that doesn't carry the pinned version is worse than an error, it's an invisible wrong install. For torch 2.9.x that index is `rocm6.3`; the newer `rocm7.x` indexes only carry torch 2.10 and up (update the script's `ROCM_INDEX` constant if the project's torch pin ever moves to 2.10+). The official ROCm wheels are Linux x86_64 and target recent Radeon (RX 7000/9000 series) and Instinct GPUs; older cards aren't officially covered.
+
+#### Windows
+
+Windows AMD users are no longer stuck on CPU: AMD ships an official **PyTorch on Windows** build (ROCm 7.2.1, `torch 2.9.1+rocm7.2.1` — a version match for this project's pin). The wheels aren't on a pip index, though; they're direct downloads from `repo.radeon.com`, so `install_rocm_torch.py` swaps them into the venv for you:
+
+```powershell
+# If you already have a .venv from the NVIDIA/CUDA setup, delete it first.
+uv python pin 3.12                       # AMD's wheels are cp312-only
+uv sync --no-install-package torch       # skip the multi-GB CUDA torch download
+uv run --no-sync python install_rocm_torch.py
+```
+
+The script installs AMD's ROCm SDK runtime wheels plus the ROCm torch wheel, then verifies the GPU is visible. To double-check yourself:
+
+```powershell
+uv run --no-sync python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# expected: 2.9.1+rocm7.2.1 True
+```
+
+Always launch with `uv run --no-sync` on this setup — a plain `uv run` re-syncs torch back to the CUDA wheel from the lockfile:
+
+```powershell
+uv run --no-sync bananabread-emb --embedding-device cuda --rerank-device cuda
+```
+
+**Requirements:** Windows 11, the [AMD Adrenalin 26.2.2 driver](https://www.amd.com/en/resources/support-articles/release-notes/RN-RAD-WIN-26-2-2.html) or newer, Python 3.12, and a supported GPU — Radeon RX 7900 XTX, RX 9070 / 9070 XT / RX 9060 XT, AI PRO R9700, PRO W7900, or Ryzen AI Max / Ryzen AI 300 iGPUs. See AMD's [release notes](https://www.amd.com/en/resources/support-articles/release-notes/RN-AMDGPU-WINDOWS-PYTORCH-7-2-1.html) for the full compatibility list. If you hit missing-DLL errors, install the [Visual C++ 2015–2022 redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe), and per AMD's known-issues list turn off WDAG and Smart App Control.
+
+Other Windows notes from AMD: it's inference-only (fine for BananaBread), and LLM batch size 1 is what's officially supported — keep `num_concurrent_embedding` / `num_concurrent_rerank` low. Full list: [AMD limitations](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/limitations/limitationsryz.html).
+
 ### Flash Attention 2
 
 Flash Attention 2 makes GPU inference faster and uses less memory. It's optional — everything works without it, just a bit slower on GPU.
 
-**Requires:** NVIDIA GPU with compute capability 7.5+ (RTX 2000 series or newer).
+**Requires:** NVIDIA GPU with compute capability 7.5+ (RTX 2000 series or newer). The prebuilt wheels below are CUDA builds — on AMD, leave Flash Attention off; BananaBread falls back to SDPA automatically.
 
 #### Installing a prebuilt wheel
 

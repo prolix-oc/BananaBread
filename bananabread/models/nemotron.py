@@ -10,6 +10,7 @@ from typing import Any, Sequence
 
 import torch
 from sentence_transformers import SentenceTransformer
+from bananabread.config import is_rocm_build
 
 
 NEMOTRON_MODEL_REPO = "nvidia/llama-nemotron-embed-1b-v2"
@@ -71,6 +72,12 @@ class NemotronEmbeddingModel:
             raise ValueError(f"Unsupported Nemotron backend: {self.backend}")
         if device.lower() != "auto" and not device.lower().startswith("cuda"):
             raise ValueError("bitsandbytes Nemotron backends require a CUDA device")
+
+        if is_rocm_build():
+            raise ValueError(
+                "bitsandbytes Nemotron backends are NVIDIA-only and cannot run on an "
+                "AMD ROCm build; use nemotron_backend='torch'"
+            )
 
         try:
             from transformers import BitsAndBytesConfig

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, RedirectResponse
-from sentence_transformers.quantization import quantize_embeddings
+from sentence_transformers.util.quantization import quantize_embeddings
 
 from bananabread.config import (
     logger, args, 

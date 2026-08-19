@@ -9,11 +9,16 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
-from bananabread.config import args, logger
+from bananabread.config import args, logger, is_rocm_build
 
 
 def _check_flash_attention_available() -> tuple[bool, str]:
     """Check whether Flash Attention 2 is installed and usable by Transformers."""
+    if is_rocm_build():
+        return False, (
+            "AMD ROCm PyTorch build: Flash Attention 2 prebuilt wheels are CUDA-only; "
+            "falling back to SDPA"
+        )
     try:
         import flash_attn  # noqa: F401
     except ImportError:
@@ -236,6 +241,12 @@ class QwenBnbModel(QwenTorchModel):
     ):
         if device_arg.lower() == "cpu":
             raise ValueError("bitsandbytes Qwen backends require a CUDA device, not CPU")
+
+        if is_rocm_build():
+            raise ValueError(
+                "bitsandbytes Qwen backends are NVIDIA-only and cannot run on an AMD "
+                "ROCm build; use qwen_backend='torch'"
+            )
 
         self.backend_name = f"torch-bnb-{quantization_bits}bit"
         self.device_arg = device_arg

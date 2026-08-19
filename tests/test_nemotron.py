@@ -51,6 +51,7 @@ def test_nemotron_builds_4bit_bitsandbytes_kwargs(monkeypatch):
         backend="torch-bnb-4bit",
     )
 
+    assert model.model.init_kwargs["device"] is None
     assert model.model.init_kwargs["model_kwargs"]["device_map"] == "auto"
     assert captured == {
         "load_in_4bit": True,
@@ -82,3 +83,27 @@ def test_nemotron_3_uses_saved_sentence_transformers_prompts(monkeypatch):
     assert model.encode_query(["find this"]) == ["find this"]
     assert model.model.document_calls == [(["a document"], (), {})]
     assert model.model.query_calls == [(["find this"], (), {})]
+
+
+def test_nemotron_3_omits_device_when_device_map_present(monkeypatch):
+    captured = {}
+
+    class FakeBitsAndBytesConfig:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import transformers
+
+    monkeypatch.setattr(nemotron, "SentenceTransformer", FakeSentenceTransformer)
+    monkeypatch.setattr(transformers, "BitsAndBytesConfig", FakeBitsAndBytesConfig)
+    model = Nemotron3EmbeddingModel(
+        "/models/nemotron-3",
+        truncate_dim=1024,
+        device="cuda:1",
+        backend="torch-bnb-8bit",
+    )
+
+    # accelerate owns placement via device_map, so `device` must not be passed
+    assert model.model.init_kwargs["device"] is None
+    assert model.model.init_kwargs["model_kwargs"]["device_map"] == {"": "cuda:1"}
+    assert captured == {"load_in_8bit": True}

@@ -65,6 +65,12 @@ def setup_pretty_logging(level=logging.INFO):
     for noisy in ("httpx", "httpcore", "urllib3", "requests"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
+    # transformers>=5 validates checkpoint rope_parameters strictly and warns
+    # about harmless extra keys some checkpoints ship (e.g. Nemotron-3's
+    # `apply_yarn_scaling` under rope_type='yarn'; the key is simply ignored).
+    # Route only that validator's output through stderr-worthy records.
+    logging.getLogger("transformers.modeling_rope_utils").setLevel(logging.ERROR)
+
 # Setup pretty logging initially (will be updated after args parse)
 setup_pretty_logging()
 logger = logging.getLogger("BananaBread-Emb")

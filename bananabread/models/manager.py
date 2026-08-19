@@ -203,7 +203,7 @@ def warmup_model(model, model_type: str, model_name: str, num_samples: int = 3):
                     
                     if hasattr(model, 'encode'):
                         # SentenceTransformer or QwenRawModel
-                        _ = model.encode([dummy_texts[i % len(dummy_texts)]])
+                        _ = model.encode([dummy_texts[i % len(dummy_texts)]], show_progress_bar=False)
                     else:
                         logger.warning(f"⚠️  Model does not have encode method, skipping warmup")
                         return
@@ -566,7 +566,7 @@ def _compute_calibration_embeddings(model):
     logger.info("🔧 Computing int8 calibration embeddings from dummy texts...")
     try:
         if hasattr(model, 'encode'):
-            emb = model.encode(_CALIBRATION_TEXTS)
+            emb = model.encode(_CALIBRATION_TEXTS, show_progress_bar=False)
         elif hasattr(model, 'get_embeddings'):
             emb = model.get_embeddings(_CALIBRATION_TEXTS)
         else:

@@ -44,7 +44,10 @@ class NemotronEmbeddingModel:
         self.model = SentenceTransformer(
             model_path,
             truncate_dim=truncate_dim,
-            device=device,
+            # With a device_map in model_kwargs, accelerate owns placement;
+            # passing `device` too only triggers SentenceTransformers'
+            # "device argument is ignored" warning, so omit it in that case.
+            device=None if "device_map" in model_kwargs else device,
             trust_remote_code=True,
             model_kwargs=model_kwargs,
         )
@@ -151,7 +154,10 @@ class Nemotron3EmbeddingModel(NemotronEmbeddingModel):
         self.model = SentenceTransformer(
             model_path,
             truncate_dim=truncate_dim,
-            device=device,
+            # With a device_map in model_kwargs, accelerate owns placement;
+            # passing `device` too only triggers SentenceTransformers'
+            # "device argument is ignored" warning, so omit it in that case.
+            device=None if "device_map" in model_kwargs else device,
             model_kwargs=model_kwargs,
         )
         self.tokenizer_lock = threading.RLock()

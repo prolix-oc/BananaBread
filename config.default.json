@@ -13,6 +13,7 @@
     "qwen_max_length": 8192,
     "qwen_flash_attention": false,
     "model_storage_dir": "./models",
+    "hf_download_backend": "auto",
     "hf_model_slug": null,
     "hf_model_revision": null,
     "hf_access_token": null,

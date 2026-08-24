@@ -11,6 +11,7 @@ from typing import Any, Sequence
 import torch
 from sentence_transformers import SentenceTransformer
 
+from bananabread.bnb_logging import install_bnb_matmul_cast_filter
 from bananabread.config import args
 from bananabread.models.metal import enable_batched_metal_linears
 
@@ -41,8 +42,10 @@ class NemotronEmbeddingModel:
         # bitsandbytes 8-bit matmuls quantize their inputs to FP16.  Keep the
         # model compute dtype aligned when requested so it does not repeatedly
         # warn about casting BF16 activations at inference time.
-        if self.backend == "torch-bnb-8bit" and args.matmul_cast_fp16:
-            self.compute_dtype = torch.float16
+        if self.backend == "torch-bnb-8bit":
+            install_bnb_matmul_cast_filter()
+            if args.matmul_cast_fp16:
+                self.compute_dtype = torch.float16
         model_kwargs = self._model_kwargs(device)
 
         # This model ships a custom bidirectional-Llama architecture.  Only this

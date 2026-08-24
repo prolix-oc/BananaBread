@@ -177,6 +177,7 @@ DEFAULTS = {
     "qwen_onnx_provider": "CPUExecutionProvider",
     "qwen_max_length": 8192,
     "model_storage_dir": "./models",
+    "hf_download_backend": "auto",
     "hf_model_slug": None,
     "hf_model_revision": None,
     "hf_access_token": None,
@@ -221,6 +222,7 @@ CONFIG_CHOICES = {
     },
     "nemotron_compute_dtype": {"bfloat16", "float16", "float32"},
     "nemotron_size": {"1B", "8B"},
+    "hf_download_backend": {"auto", "http", "xet"},
     "quant": {"standard", "ubinary", "int8"},
     "log_level": {"DEBUG", "INFO", "WARNING", "ERROR"},
 }
@@ -521,6 +523,8 @@ def parse_args():
                        help="Cast compute dtype to float16 during bitsandbytes 8-bit quantization instead of keeping bfloat16 (default: False)")
     parser.add_argument("--model-storage-dir", type=str, default=DEFAULTS["model_storage_dir"],
                        help=f"Directory for explicitly downloaded model snapshots (default: {DEFAULTS['model_storage_dir']})")
+    parser.add_argument("--hf-download-backend", type=str, choices=['auto', 'http', 'xet'], default=DEFAULTS["hf_download_backend"],
+                       help="Hugging Face model download backend; Xet applies to supplied and custom models (default: auto)")
     parser.add_argument("--hf-model-slug", type=str, default=DEFAULTS.get("hf_model_slug"),
                        help="Hugging Face model slug to use when --embedding-model=hf, e.g. sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--hf-model-revision", type=str, default=DEFAULTS.get("hf_model_revision"),

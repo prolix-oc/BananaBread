@@ -43,6 +43,18 @@ That's it. On the first run, uv will:
 3. Download the default models from HuggingFace
 4. Start the server on **http://localhost:8008**
 
+BananaBread uses Hugging Face's Xet downloader automatically when it is
+available. To explicitly select the chunked Xet path for all supplied and
+custom models, start the server with:
+
+```bash
+uv run bananabread-emb --hf-download-backend xet
+```
+
+Set `hf_download_backend` to `"xet"` in `config.json` for the same behavior.
+`"http"` forces the standard HTTP downloader, while `"auto"` (the default) honors the Hugging Face environment and installed capabilities. Hub files
+that do not expose Xet metadata still download over HTTP.
+
 ### 2. Set up API keys
 
 On first launch, BananaBread creates an `api_keys.json` file with a generated key. You can also create it yourself beforehand:
@@ -237,6 +249,7 @@ All available options (grouped by purpose):
 | `qwen_flash_attention` | `false` | Enable Flash Attention 2 for Qwen models |
 | `matmul_cast_fp16` | `false` | Cast Qwen and Nemotron compute dtype to `float16` during bitsandbytes 8-bit quantization (suppresses bfloat16→fp16 warning) |
 | `model_storage_dir` | `"./models"` | Directory used by `/v1/models/download` for explicit model snapshots |
+| `hf_download_backend` | `"auto"` | Hub download backend: `"auto"`, `"xet"`, or `"http"`; applies to supplied and custom models |
 | `hf_model_slug` | `null` | Hugging Face repo id used when `embedding_model="hf"` |
 | `hf_model_revision` | `null` | Optional branch, tag, or commit SHA for `hf_model_slug` |
 | `hf_access_token` | `null` | Optional Hugging Face token for private or gated model metadata/downloads |

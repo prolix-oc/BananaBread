@@ -39,7 +39,10 @@ dependencies = [
     # MetalConfig requires Transformers 5.15+; Nemotron-3 requires
     # SentenceTransformers 5.4.1+.
     "transformers>=5.15.0",
-    "huggingface-hub>=0.20.0",
+    # 0.32+ integrates hf-xet into the standard Hub download APIs.
+    "huggingface-hub>=0.32.0",
+    # 1.5.2 fixes retry delays that could leave Xet downloads hung for hours.
+    "hf-xet>=1.5.2,<2.0.0; platform_machine == 'x86_64' or platform_machine == 'amd64' or platform_machine == 'AMD64' or platform_machine == 'arm64' or platform_machine == 'aarch64'",
     "sentence-transformers>=5.4.1",
     "mxbai-rerank>=0.1.0",
     # System and utilities

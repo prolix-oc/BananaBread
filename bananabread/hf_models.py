@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub import HfApi, constants, snapshot_download
 
 from bananabread.utils import route_tqdm_to_logger
 
@@ -29,6 +29,46 @@ STANDARD_MODEL_REPOS = {
     "nemotron-3-embed-1b-bf16": "nvidia/Nemotron-3-Embed-1B-BF16",
     "nemotron-3-embed-8b-bf16": "nvidia/Nemotron-3-Embed-8B-BF16",
 }
+
+HF_DOWNLOAD_BACKENDS = {"auto", "http", "xet"}
+_INITIAL_HF_HUB_DISABLE_XET = constants.HF_HUB_DISABLE_XET
+
+
+def _has_hf_xet() -> bool:
+    try:
+        import hf_xet  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def configure_hf_download_backend(backend: str = "auto") -> str:
+    """Configure the process-wide Hugging Face download backend.
+
+    Hugging Face selects Xet inside its normal download APIs, so changing its
+    process-wide switch also covers downloads initiated by Transformers,
+    SentenceTransformers, and mxbai-rerank.
+    """
+    normalized_backend = backend.strip().lower()
+    if normalized_backend not in HF_DOWNLOAD_BACKENDS:
+        choices = ", ".join(sorted(HF_DOWNLOAD_BACKENDS))
+        raise ValueError(f"Unknown Hugging Face download backend {backend!r}; choose {choices}.")
+
+    if normalized_backend == "auto":
+        constants.HF_HUB_DISABLE_XET = _INITIAL_HF_HUB_DISABLE_XET
+    elif normalized_backend == "http":
+        constants.HF_HUB_DISABLE_XET = True
+    else:
+        if not _has_hf_xet():
+            raise RuntimeError(
+                "The Xet download backend requires hf-xet. Reinstall BananaBread's "
+                "dependencies or run `uv sync`."
+            )
+        constants.HF_HUB_DISABLE_XET = False
+
+    if not constants.HF_HUB_DISABLE_XET and _has_hf_xet():
+        return "xet"
+    return "http"
 
 
 def resolve_model_repo_id(

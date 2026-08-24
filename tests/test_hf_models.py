@@ -4,6 +4,32 @@ import bananabread.hf_models as hf_models
 from bananabread.hf_models import resolve_model_repo_id
 
 
+def test_configures_xet_download_backend(monkeypatch):
+    monkeypatch.setattr(hf_models, "_has_hf_xet", lambda: True)
+    monkeypatch.setattr(hf_models.constants, "HF_HUB_DISABLE_XET", True)
+
+    active_backend = hf_models.configure_hf_download_backend("xet")
+
+    assert active_backend == "xet"
+    assert hf_models.constants.HF_HUB_DISABLE_XET is False
+
+
+def test_configures_http_download_backend(monkeypatch):
+    monkeypatch.setattr(hf_models.constants, "HF_HUB_DISABLE_XET", False)
+
+    active_backend = hf_models.configure_hf_download_backend("http")
+
+    assert active_backend == "http"
+    assert hf_models.constants.HF_HUB_DISABLE_XET is True
+
+
+def test_xet_download_backend_requires_hf_xet(monkeypatch):
+    monkeypatch.setattr(hf_models, "_has_hf_xet", lambda: False)
+
+    with pytest.raises(RuntimeError, match="requires hf-xet"):
+        hf_models.configure_hf_download_backend("xet")
+
+
 def test_resolves_author_and_path_to_repo_id():
     assert (
         resolve_model_repo_id(author="sentence-transformers", path="all-MiniLM-L6-v2")

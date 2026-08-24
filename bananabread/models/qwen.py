@@ -1,6 +1,5 @@
 import sys
 import threading
-import warnings
 from pathlib import Path
 from typing import List
 
@@ -9,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
+from bananabread.bnb_logging import install_bnb_matmul_cast_filter
 from bananabread.config import args, logger, is_rocm_build
 from bananabread.models.metal import enable_batched_metal_linears
 
@@ -249,15 +249,9 @@ class QwenBnbModel(QwenTorchModel):
 
         # Handle matmul_cast_fp16 config for 8-bit quantization
         if quantization_bits == 8:
+            install_bnb_matmul_cast_filter()
             if args.matmul_cast_fp16:
                 self.compute_dtype = torch.float16
-            else:
-                # Suppress the bitsandbytes cast warning when keeping bfloat16/fp32
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"MatMul8bitLt: inputs will be cast from .* to float16 during quantization",
-                    category=UserWarning,
-                )
 
         try:
             from transformers import BitsAndBytesConfig

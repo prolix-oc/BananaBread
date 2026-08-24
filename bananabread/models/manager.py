@@ -6,7 +6,12 @@ from sentence_transformers import SentenceTransformer
 from mxbai_rerank import MxbaiRerankV2
 
 from bananabread.config import logger, args
-from bananabread.hf_models import download_hf_model, inspect_hf_model, resolve_model_repo_id
+from bananabread.hf_models import (
+    configure_hf_download_backend,
+    download_hf_model,
+    inspect_hf_model,
+    resolve_model_repo_id,
+)
 from bananabread.models.nemotron import (
     NEMOTRON_3_MODEL_REPOS,
     NEMOTRON_MODEL_REPO,
@@ -27,6 +32,12 @@ classifier = None
 
 # Pre-computed calibration embeddings for stable int8 quantization
 calibration_embeddings = None
+
+# Configure Hugging Face before any supplied or user-selected model can start
+# downloading. This process-wide setting also applies to downloads started by
+# SentenceTransformers, Transformers, and mxbai-rerank.
+active_hf_download_backend = configure_hf_download_backend(args.hf_download_backend)
+logger.info(f"📥 Hugging Face model download backend: {active_hf_download_backend}")
 
 _CALIBRATION_TEXTS = [
     "This is a short sentence.",

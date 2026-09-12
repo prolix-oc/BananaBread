@@ -295,6 +295,49 @@ def _uses_cuda_device(device: str) -> bool:
     return device == "auto" or device.startswith("cuda")
 
 
+def _require_requested_accelerators(parsed_args) -> None:
+    """Fail early when an explicit CUDA/HIP target is unavailable.
+
+    This also turns the otherwise cryptic NVML warning produced by an
+    accidentally re-synced NVIDIA wheel on an AMD host into an actionable
+    project-environment error.
+    """
+    requested = []
+    if parsed_args.embedding_device.startswith("cuda"):
+        requested.append(f"embedding_device={parsed_args.embedding_device!r}")
+
+    if parsed_args.reranking_model is None:
+        reranking_enabled = parsed_args.embedding_model not in {"nemotron", "nemotron-3"}
+    else:
+        reranking_enabled = parsed_args.reranking_model != "none"
+    if reranking_enabled and parsed_args.rerank_device.startswith("cuda"):
+        requested.append(f"rerank_device={parsed_args.rerank_device!r}")
+
+    if not requested or torch.cuda.is_available():
+        return
+
+    if is_rocm_build():
+        build = f"ROCm/HIP {torch.version.hip}"
+    elif getattr(torch.version, "cuda", None):
+        build = f"NVIDIA CUDA {torch.version.cuda}"
+    else:
+        build = "CPU-only"
+    raise RuntimeError(
+        "A CUDA/HIP accelerator was explicitly requested "
+        f"({', '.join(requested)}), but PyTorch cannot see one.\n"
+        f"Interpreter: {sys.executable}\n"
+        f"PyTorch: {torch.__version__} ({build})\n"
+        "On an AMD Linux host, install and verify ROCm in BananaBread's project "
+        "environment with:\n"
+        "  uv run --no-sync python install_rocm_torch.py\n"
+        "  uv run --no-sync python -c \"import sys, torch; "
+        "print(sys.executable, torch.__version__, torch.version.hip, "
+        "torch.cuda.is_available())\"\n"
+        "Use that same project environment to launch BananaBread. If this already "
+        "reports a ROCm build, check the ROCm driver and GPU device permissions."
+    )
+
+
 def validate_args(parsed_args):
     """Validate config-derived values because argparse choices do not validate defaults."""
     if is_rocm_build():
@@ -318,6 +361,8 @@ def validate_args(parsed_args):
             setattr(parsed_args, key, DEFAULTS[key])
         else:
             setattr(parsed_args, key, value.strip().lower())
+
+    _require_requested_accelerators(parsed_args)
 
     active_qwen_devices = []
     reranking_model = parsed_args.reranking_model

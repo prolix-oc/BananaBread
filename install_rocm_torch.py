@@ -30,6 +30,7 @@ References:
 """
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -65,8 +66,41 @@ AMD_TORCH_URL = (
 AMD_REQUIRED_PYTHON = (3, 12)
 
 
-def check_torch():
-    """Return (torch version, ROCm/HIP version or None) for this interpreter."""
+def project_python() -> Path:
+    """Return the interpreter used by BananaBread's project environment."""
+    if sys.platform == "win32":
+        return REPO_ROOT / ".venv" / "Scripts" / "python.exe"
+    return REPO_ROOT / ".venv" / "bin" / "python"
+
+
+def check_torch(python_executable: str | Path | None = None):
+    """Return (torch version, ROCm/HIP version) for an interpreter.
+
+    With no argument this inspects the installer process. Passing the project
+    interpreter is important when a shell alias makes ``python`` point outside
+    ``.venv`` even after activation.
+    """
+    if python_executable is not None:
+        executable = Path(python_executable)
+        if not executable.exists():
+            return None, None
+        probe = (
+            "import json, torch; "
+            "print(json.dumps([torch.__version__, getattr(torch.version, 'hip', None)]))"
+        )
+        result = subprocess.run(
+            [str(executable), "-c", probe],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None, None
+        try:
+            return tuple(json.loads(result.stdout.strip().splitlines()[-1]))
+        except (IndexError, json.JSONDecodeError, TypeError, ValueError):
+            return None, None
+
     try:
         import torch
 
@@ -122,9 +156,32 @@ def run_cmd(cmd, **kwargs):
     return subprocess.run(cmd, cwd=str(REPO_ROOT), **kwargs)
 
 
-def verify_subprocess(assertion: str) -> int:
-    """Run `python -c <assertion>` in a fresh interpreter against the venv."""
-    cmd = [sys.executable, "-c", assertion]
+def verification_code(restore_cuda: bool = False) -> str:
+    """Return checks that distinguish a working ROCm build from CUDA."""
+    if restore_cuda:
+        return (
+            "import sys, torch; v = torch.__version__; "
+            "assert '+cu130' in v, v; "
+            "assert torch.version.cuda, 'CUDA runtime missing'; "
+            "print('python', sys.executable, '| torch', v, '| CUDA', torch.version.cuda)"
+        )
+    return (
+        "import sys, torch; v = torch.__version__; "
+        "assert '+rocm' in v, v; "
+        "assert torch.version.hip, 'ROCm/HIP runtime missing'; "
+        "assert torch.cuda.is_available(), 'AMD GPU not visible'; "
+        "print('python', sys.executable, '| torch', v, '| HIP', torch.version.hip, "
+        "'| GPU', torch.cuda.get_device_name(0))"
+    )
+
+
+def verify_subprocess(assertion: str, python_executable: str | Path | None = None) -> int:
+    """Run checks in BananaBread's project interpreter, never a shell alias."""
+    executable = Path(python_executable) if python_executable else project_python()
+    if not executable.exists():
+        print(f"\nVerification FAILED: project interpreter not found at {executable}")
+        return 1
+    cmd = [str(executable), "-c", assertion]
     print("\nVerifying installation...")
     result = run_cmd(cmd)
     if result.returncode != 0:
@@ -155,11 +212,7 @@ def install_linux(dry_run: bool, restore_cuda: bool) -> None:
             print(f"  - {old}")
             print(f"  + {new}")
 
-    suffix = "+cu130" if restore_cuda else "+rocm"
-    verify = (
-        "import torch; v = torch.__version__; "
-        f"assert {suffix!r} in v, v; print('torch', v, 'ready')"
-    )
+    verify = verification_code(restore_cuda)
     steps = [
         ["uv", "lock", "--upgrade-package", linux_torch_requirement(restore_cuda)],
         ["uv", "sync"],
@@ -170,7 +223,7 @@ def install_linux(dry_run: bool, restore_cuda: bool) -> None:
         print(f"  write {PYPROJECT}")
         for step in steps:
             print(f"  {' '.join(step)}")
-        print(f"  {sys.executable} -c {verify!r}")
+        print(f"  {project_python()} -c {verify!r}")
         return
 
     PYPROJECT.write_text(rewritten, encoding="utf-8")
@@ -205,15 +258,11 @@ def install_windows(dry_run: bool) -> None:
         )
         sys.exit(1)
 
-    version, hip = check_torch()
+    target_python = project_python()
+    version, hip = check_torch(target_python)
     if hip:
-        print(f"ROCm torch already installed: {version}")
-        sys.exit(
-            verify_subprocess(
-                "import torch; assert torch.cuda.is_available(), 'GPU not visible'; "
-                "print('AMD GPU visible:', torch.cuda.get_device_name(0))"
-            )
-        )
+        print(f"ROCm torch already installed in {target_python}: {version}")
+        sys.exit(verify_subprocess(verification_code(), target_python))
 
     print("Installing AMD ROCm SDK runtime components and torch wheel:")
     for url in AMD_SDK_URLS + [AMD_TORCH_URL]:
@@ -221,15 +270,15 @@ def install_windows(dry_run: bool) -> None:
 
     steps = [
         ["uv", "sync", "--no-install-package", "torch"],
-        ["uv", "pip", "install", "--python", sys.executable, "--no-cache", *AMD_SDK_URLS],
-        ["uv", "pip", "install", "--python", sys.executable, "--no-cache", AMD_TORCH_URL],
+        ["uv", "pip", "install", "--python", str(target_python), "--no-cache", *AMD_SDK_URLS],
+        ["uv", "pip", "install", "--python", str(target_python), "--no-cache", AMD_TORCH_URL],
     ]
 
     if dry_run:
         print("\n[dry-run] Would execute:")
         for step in steps:
             print(f"  {' '.join(step)}")
-        print(f"  {sys.executable} -c " f"'import torch; assert torch.cuda.is_available()'")
+        print(f"  {target_python} -c {verification_code()!r}")
         return
 
     for step in steps:
@@ -238,11 +287,7 @@ def install_windows(dry_run: bool) -> None:
             print(f"\nCommand failed (exit code {result.returncode}). Aborting.")
             sys.exit(result.returncode)
 
-    code = verify_subprocess(
-        "import torch; v = torch.__version__; assert '+rocm' in v, v; "
-        "assert torch.cuda.is_available(), 'AMD GPU not visible'; "
-        "print('torch', v, '| GPU:', torch.cuda.get_device_name(0))"
-    )
+    code = verify_subprocess(verification_code(), target_python)
     if code == 0:
         print(
             "\nDone. IMPORTANT: the lockfile cannot describe AMD's Windows wheels,\n"
@@ -272,11 +317,24 @@ def main():
     )
     args = parser.parse_args()
 
-    version, hip = check_torch()
-    print(f"Platform:  {sys.platform}")
-    print(f"Python:    {sys.version_info.major}.{sys.version_info.minor} ({sys.executable})")
-    print(f"PyTorch:   {version or 'not installed'}")
-    print(f"ROCm/HIP:  {hip or 'none (CUDA or CPU build)'}")
+    installer_version, installer_hip = check_torch()
+    target_python = project_python()
+    target_version, target_hip = check_torch(target_python)
+    print(f"Platform:         {sys.platform}")
+    print(
+        f"Installer Python: {sys.version_info.major}.{sys.version_info.minor} "
+        f"({sys.executable})"
+    )
+    print(f"Project Python:   {target_python}")
+    print(f"Project PyTorch:  {target_version or 'not installed'}")
+    print(f"Project ROCm/HIP: {target_hip or 'none (CUDA or CPU build)'}")
+    if Path(sys.executable).resolve() != target_python.resolve():
+        print(
+            "NOTE: the installer and BananaBread interpreters differ. All installs and "
+            "verification will target Project Python."
+        )
+    elif installer_version != target_version or installer_hip != target_hip:
+        print("NOTE: project Torch metadata changed while it was being inspected.")
     print()
 
     if sys.platform == "darwin":

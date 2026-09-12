@@ -149,7 +149,9 @@ def test_validate_args_keeps_nemotron_metal_on_mps():
     assert result.nemotron_backend == "torch-metal-4bit"
 
 
-def test_validate_args_falls_back_for_nemotron_metal_on_cuda():
+def test_validate_args_falls_back_for_nemotron_metal_on_cuda(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
     result = config.validate_args(
         _metal_namespace(embedding_model="nemotron", embedding_device="cuda")
     )

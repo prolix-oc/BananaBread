@@ -338,9 +338,17 @@ uv run --no-sync python install_rocm_torch.py --dry-run
 uv run --no-sync python install_rocm_torch.py
 ```
 
+The helper always installs into and verifies BananaBread's `.venv`, even if a
+shell alias named `python` points at a different interpreter. Its final output
+must show a non-empty HIP version, the AMD GPU name, and the `.venv` Python path.
+
 Because the lockfile itself now contains the ROCm build, plain `uv run bananabread-emb --embedding-device cuda` works afterwards — no extra flags. To switch back to NVIDIA CUDA later: `uv run python install_rocm_torch.py --restore-cuda`.
 
 Why the index matters: the installer asks uv for the exact `2.11.0+rocm7.2` build so a missing or incompatible ROCm wheel produces a resolution error instead of silently falling back to a CUDA build. The official ROCm wheels are Linux x86_64. AMD supports the RX 7900 XTX (`gfx1100`), RX 9070 series (`gfx1201`), and RX 9060 series (`gfx1200`) on Ubuntu 24.04.3, Ubuntu 22.04.5, RHEL 10.1, and RHEL 9.7; see the [ROCm 7.2 system requirements](https://rocm.docs.amd.com/projects/install-on-linux/en/docs-7.2.0/reference/system-requirements.html#supported-gpus).
+
+The ROCm 7.2 index also carries newer Torch releases, but still carries 2.11.0.
+Commands that sort the index and use `tail` only display its newest releases;
+they do not show that the pinned wheel disappeared.
 
 #### Windows
 
@@ -612,6 +620,22 @@ BananaBread is designed to impersonate other servers. It responds to model listi
 ---
 
 ## Troubleshooting
+
+### `Can't initialize NVML` on an AMD GPU
+
+NVML is NVIDIA's management library. On an AMD host this warning normally means
+the BananaBread process loaded the NVIDIA/CUDA Torch wheel instead of the ROCm
+wheel. Check the exact project interpreter—not an activated-shell `python` alias:
+
+```bash
+uv run --no-sync python -c "import sys, torch; print(sys.executable); print(torch.__version__, torch.version.hip, torch.cuda.is_available())"
+```
+
+For Linux, the expected result contains `.venv`, `+rocm7.2`, a non-empty HIP
+version, and `True`. If it does not, rerun
+`uv run --no-sync python install_rocm_torch.py`. BananaBread now stops before
+model loading with these runtime details when an explicit `cuda` device is not
+available, instead of leaving the NVML warning as the only clue.
 
 ### Flash Attention fails to install on Windows
 

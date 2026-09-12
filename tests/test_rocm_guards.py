@@ -94,6 +94,9 @@ def _bnb_namespace():
 
 def test_validate_args_keeps_bnb_backends_on_rocm(monkeypatch):
     _set_hip(monkeypatch, "6.3.41935")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda _device: "AMD Radeon")
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
     result = config.validate_args(_bnb_namespace())
     assert result.qwen_backend == "torch-bnb-8bit"
     assert result.nemotron_backend == "torch-bnb-4bit"
@@ -101,6 +104,8 @@ def test_validate_args_keeps_bnb_backends_on_rocm(monkeypatch):
 
 def test_validate_args_keeps_bnb_backends_without_rocm(monkeypatch):
     _set_hip(monkeypatch, None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
     result = config.validate_args(_bnb_namespace())
     assert result.qwen_backend == "torch-bnb-8bit"
     assert result.nemotron_backend == "torch-bnb-4bit"
@@ -124,6 +129,32 @@ def test_validate_args_keeps_bfloat16_when_supported(monkeypatch):
     result = config.validate_args(parsed)
     assert result.qwen_compute_dtype == "bfloat16"
     assert result.nemotron_compute_dtype == "bfloat16"
+
+
+def test_validate_args_fails_early_for_unavailable_cuda(monkeypatch):
+    _set_hip(monkeypatch, None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.version, "cuda", "13.0", raising=False)
+
+    with pytest.raises(RuntimeError, match=r"NVIDIA CUDA 13\.0") as exc:
+        config.validate_args(_bnb_namespace())
+
+    message = str(exc.value)
+    assert sys.executable in message
+    assert "uv run --no-sync python install_rocm_torch.py" in message
+
+
+def test_validate_args_ignores_unused_rerank_cuda_device(monkeypatch):
+    _set_hip(monkeypatch, None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    parsed = _bnb_namespace()
+    parsed.embedding_model = "nemotron"
+    parsed.embedding_device = "cpu"
+    parsed.reranking_model = None
+
+    result = config.validate_args(parsed)
+
+    assert result.rerank_device == "cuda:0"
 
 
 # ----- install_rocm_torch.py: pyproject rewrite -----
@@ -170,6 +201,19 @@ def test_rewrite_is_idempotent():
 def test_linux_lock_requirement_selects_exact_backend_build():
     assert install_rocm_torch.linux_torch_requirement(False) == "torch==2.11.0+rocm7.2"
     assert install_rocm_torch.linux_torch_requirement(True) == "torch==2.11.0+cu130"
+
+
+def test_rocm_verification_checks_hip_and_gpu_visibility():
+    code = install_rocm_torch.verification_code()
+    assert "torch.version.hip" in code
+    assert "torch.cuda.is_available()" in code
+
+
+def test_cuda_verification_does_not_require_hip():
+    code = install_rocm_torch.verification_code(restore_cuda=True)
+    assert "+cu130" in code
+    assert "torch.version.cuda" in code
+    assert "torch.version.hip" not in code
 
 
 def test_windows_amd_wheel_keeps_vendor_torch_version():

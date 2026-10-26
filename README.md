@@ -769,6 +769,20 @@ BananaBread is designed to impersonate other servers. It responds to model listi
 
 ## Troubleshooting
 
+### Embedding request returns `Method Not Allowed` or `Not Found`
+
+For a JSON body with `"content"`, use `POST /embedding`. `/embed` is not an endpoint. For OpenAI-format bodies with `"input"`, use `POST /v1/embeddings`; Ollama clients use `POST /api/embed` or `POST /api/embeddings`.
+
+With `"disable_api_key_auth": true` in the loaded config and the server restarted, this request needs no Authorization header:
+
+```bash
+curl http://127.0.0.1:8008/embedding \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"Hello world","normalize":true}'
+```
+
+Older versions could report 405 for unknown paths because the catch-all OPTIONS route masked the 404 response. A valid endpoint called with the wrong HTTP method still returns 405.
+
 ### `operator torchvision::nms does not exist` during ROCm verification
 
 This means torchvision's native operators were unavailable when it imported.

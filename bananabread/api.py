@@ -37,6 +37,7 @@ from bananabread.utils import (
 )
 from bananabread.hf_models import download_hf_model, inspect_hf_model, resolve_model_repo_id
 from bananabread.tenancy import TenantStore, count_text_tokens
+from bananabread.middleware import OptionsMiddleware
 from bananabread.admin_panel import ADMIN_PANEL_HTML, LOGIN_HTML
 from bananabread.auth import (
     create_jwt, verify_jwt, set_auth_cookie, clear_auth_cookie
@@ -274,6 +275,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Handle OPTIONS outside routing so unmatched paths can return 404 and
+# trailing slashes can redirect. CORS stays outermost to validate preflights.
+app.add_middleware(OptionsMiddleware)
+
 # Enable CORS for all origins
 # We allow all origins since BananaBread is typically accessed from various frontends
 # Authorization is handled via Bearer token in headers, not cookies
@@ -285,26 +290,6 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
-
-# Explicit OPTIONS handler for all routes - ensures CORS preflight works even behind reverse proxies
-# This catches any OPTIONS request and returns proper CORS headers
-@app.options("/{rest_of_path:path}")
-async def preflight_handler(request: Request, rest_of_path: str):
-    """
-    Handle CORS preflight requests explicitly.
-    This ensures OPTIONS requests work correctly even behind reverse proxies
-    that might not forward them properly to the CORSMiddleware.
-    """
-    origin = request.headers.get("origin", "*")
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": origin if origin != "*" else "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD",
-            "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "*"),
-            "Access-Control-Max-Age": "86400",  # Cache preflight for 24 hours
-        }
-    )
 
 # Store configuration in app state
 app.state.cpu_count = CPU_COUNT

@@ -136,6 +136,52 @@ def test_anonymous_requests_share_usage_and_cache(api_client, monkeypatch):
     assert users["alice"]["usage"]["daily"]["tokens"] == 0
 
 
+@pytest.mark.parametrize("disabled", [False, True])
+def test_embedding_trailing_slash_redirect_preserves_post(api_client, monkeypatch, disabled):
+    api, client, store, model = api_client
+    monkeypatch.setattr(api.args, "disable_api_key_auth", disabled)
+    api.load_api_keys()
+    headers = {} if disabled else {"Authorization": "Bearer alice-key"}
+    response = client.post("/v1/embeddings/", json={"input": "hello"}, headers=headers)
+    assert response.status_code == 307, response.text
+    assert response.headers["location"] == "http://testserver/v1/embeddings"
+    response = client.post(
+        "/v1/embeddings/", json={"input": "hello"}, headers=headers, follow_redirects=True
+    )
+    assert response.status_code == 200, response.text
+    assert response.request.method == "POST"
+
+
+def test_options_handler_does_not_mask_unknown_paths_or_allowed_methods(api_client):
+    api, client, store, model = api_client
+    response = client.get("/v1/embeddings")
+    assert response.status_code == 405
+    assert "POST" in response.headers["allow"]
+    assert client.post("/embed", json={"content": "hello"}).status_code == 404
+    assert client.post("/v1/v1/embeddings", json={"input": "hello"}).status_code == 404
+
+
+@pytest.mark.parametrize("path", ["/v1/embeddings", "/v1/embeddings/", "/unknown"])
+def test_options_requests_work_without_auth_or_origin(api_client, path):
+    api, client, store, model = api_client
+    response = client.options(path)
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert "POST" in response.headers["access-control-allow-methods"]
+
+
+@pytest.mark.parametrize("method, expected", [("POST", 200), ("TRACE", 400)])
+def test_cors_preflight_is_validated_without_auth(api_client, method, expected):
+    api, client, store, model = api_client
+    response = client.options("/v1/embeddings", headers={
+        "Origin": "https://client.example",
+        "Access-Control-Request-Method": method,
+        "Access-Control-Request-Headers": "content-type",
+    })
+    assert response.status_code == expected
+    assert response.headers["access-control-allow-origin"] == "*"
+
+
 def test_existing_anonymous_user_limits_survive_restart(api_client, monkeypatch):
     api, client, store, model = api_client
     anonymous = store.create_user("anonymous", limits={"daily": 1})

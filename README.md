@@ -133,6 +133,8 @@ The token budget limits batching, not document length: an input over budget runs
 
 Compatible Transformers encoders use a compact, broadcastable key padding mask for plain bidirectional SDPA attention. Causal, sliding-window, packed, and other custom patterns retain the standard mask implementation. This optimization applies by capability across embedding models, including their multimodal backbones, and does not require FlashAttention.
 
+CUDA inference defaults to `expandable_segments:True` with no block split limit, allowing the allocator to reuse memory across changing batch shapes. Explicit `PYTORCH_ALLOC_CONF` or `PYTORCH_CUDA_ALLOC_CONF` settings are preserved. GPU monitors include the allocator's reserved memory, which can exceed the memory occupied by active tensors; changing allocator settings requires restarting the process.
+
 ### Using Qwen models
 
 Qwen can handle both embedding and reranking with a single model, which saves memory:

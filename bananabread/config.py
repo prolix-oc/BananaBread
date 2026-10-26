@@ -141,9 +141,12 @@ def get_available_cores():
         return {'0': list(range(multiprocessing.cpu_count()))}
 
 # ----- GPU/CUDA Optimizations (Environment Variables) -----
-# Set these before importing other heavy internal modules if possible, 
-# keeping them here or in the main init.
-os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True,max_split_size_mb:128'
+# Keep the split size unlimited so variable inference shapes can reuse large
+# free blocks. A fixed max_split_size_mb with expandable segments can instead
+# grow the reserved pool until an allocation retry forces it to be released.
+# Respect explicit settings through either PyTorch environment variable.
+if 'PYTORCH_ALLOC_CONF' not in os.environ and 'PYTORCH_CUDA_ALLOC_CONF' not in os.environ:
+    os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 os.environ['TORCHINDUCTOR_CUDAGRAPH_TREES'] = '0'
 
 # ----- Config File and Argument Parsing -----

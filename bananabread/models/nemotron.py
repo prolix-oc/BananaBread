@@ -42,13 +42,6 @@ class NemotronEmbeddingModel:
     ) -> None:
         self.backend = backend
         self.compute_dtype = self._torch_dtype(compute_dtype)
-        # bitsandbytes 8-bit matmuls quantize their inputs to FP16.  Keep the
-        # model compute dtype aligned when requested so it does not repeatedly
-        # warn about casting BF16 activations at inference time.
-        if self.backend == "torch-bnb-8bit":
-            install_bnb_matmul_cast_filter()
-            if args.matmul_cast_fp16:
-                self.compute_dtype = torch.float16
         model_kwargs = self._model_kwargs(device)
 
         # This model ships a custom bidirectional-Llama architecture.  Only this
@@ -118,6 +111,11 @@ class NemotronEmbeddingModel:
             ) from exc
 
         if self.backend == "torch-bnb-8bit":
+            # LLM.int8 quantizes through FP16. Apply the override here so all
+            # Nemotron loaders, including Nemotron-3 and 3.5, honor the setting.
+            install_bnb_matmul_cast_filter()
+            if args.matmul_cast_fp16:
+                self.compute_dtype = torch.float16
             quantization_config = BitsAndBytesConfig(load_in_8bit=True)
         else:
             quantization_config = BitsAndBytesConfig(

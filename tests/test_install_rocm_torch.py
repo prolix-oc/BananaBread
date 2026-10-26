@@ -17,7 +17,7 @@ import install_rocm_torch
 @pytest.mark.parametrize("restore_cuda,backend", [(False, "rocm7.2"), (True, "cu130")])
 def test_linux_switch_selects_both_native_packages(monkeypatch, tmp_path, restore_cuda, backend):
     pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text('[tool.uv]\nextra-index-url = ["old"]\n')
+    pyproject.write_text('[[tool.uv.index]]\nname = "pytorch"\nurl = "old"\n')
     monkeypatch.setattr(install_rocm_torch, "PYPROJECT", pyproject)
     monkeypatch.setattr(install_rocm_torch, "require_uv", lambda: None)
     commands = []
@@ -33,21 +33,22 @@ def test_linux_switch_selects_both_native_packages(monkeypatch, tmp_path, restor
         install_rocm_torch.install_linux(dry_run=False, restore_cuda=restore_cuda)
 
     assert result.value.code == 0
+    assert f'url = "https://download.pytorch.org/whl/{backend}"' in pyproject.read_text()
     assert commands == [
         [
             "uv",
             "lock",
             "--upgrade-package",
-            f"torch==2.11.0+{backend}",
+            "torch==2.14.1",
             "--upgrade-package",
-            f"torchvision==0.26.0+{backend}",
+            "torchvision==0.29.1",
         ],
         ["uv", "sync"],
     ]
 
 
 def _verification_environment(monkeypatch, *, backend="rocm7.2", vision=None, native_ops=True):
-    versions = {"torch": f"2.11.0+{backend}", "torchvision": vision or f"0.26.0+{backend}"}
+    versions = {"torch": f"2.14.1+{backend}", "torchvision": vision or f"0.29.1+{backend}"}
     monkeypatch.setattr(importlib.metadata, "version", versions.__getitem__)
     monkeypatch.setenv("TORCHVISION_WARN_WHEN_EXTENSION_LOADING_FAILS", "")
     torch = SimpleNamespace(
@@ -73,7 +74,7 @@ def _verification_environment(monkeypatch, *, backend="rocm7.2", vision=None, na
     return vision_imports
 
 
-@pytest.mark.parametrize("vision", ["0.26.0", "0.26.0+cu130"])
+@pytest.mark.parametrize("vision", ["0.29.1", "0.29.1+cu130"])
 def test_rocm_verification_reports_wrong_wheel_before_import(monkeypatch, capsys, vision):
     imports = _verification_environment(monkeypatch, vision=vision)
 
@@ -81,7 +82,7 @@ def test_rocm_verification_reports_wrong_wheel_before_import(monkeypatch, capsys
         exec(install_rocm_torch.verification_code(), {})
 
     output = capsys.readouterr().out
-    assert "torch 2.11.0+rocm7.2" in output
+    assert "torch 2.14.1+rocm7.2" in output
     assert f"torchvision {vision}" in output
     assert "HIP 7.2" in output
     assert imports == []

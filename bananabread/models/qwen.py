@@ -9,28 +9,25 @@ import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer
 
 from bananabread.bnb_logging import install_bnb_matmul_cast_filter
-from bananabread.config import args, logger, is_rocm_build
+from bananabread.config import args, logger
+from bananabread.models.attention import flash_attention_supported_device
 from bananabread.models.metal import enable_batched_metal_linears
 
 
 def _check_flash_attention_available() -> tuple[bool, str]:
     """Check whether Flash Attention 2 is installed and usable by Transformers."""
-    if is_rocm_build():
-        return False, (
-            "AMD ROCm PyTorch build: Flash Attention 2 prebuilt wheels are CUDA-only; "
-            "falling back to SDPA"
-        )
     try:
         import flash_attn  # noqa: F401
-    except ImportError:
-        return False, "flash_attn is not installed in this Python environment"
+        import flash_attn.bert_padding  # noqa: F401
+    except ImportError as exc:
+        return False, f"flash_attn or a required helper failed to import: {exc}"
     except Exception as e:
         import sys
 
         if sys.platform == 'win32':
             return False, (
                 f"flash_attn failed to import on Windows: {e}. "
-                "Run `uv run python install_flash_attn.py` from the repo to install "
+                "Run `uv run --no-sync python install_flash_attn.py` from the repo to install "
                 "a matching precompiled wheel, or install a wheel manually (see README)."
             )
         return False, f"flash_attn failed to import: {e}"
@@ -174,6 +171,9 @@ class QwenTorchModel(BaseQwenModel):
             if not torch.cuda.is_available():
                 logger.warning("Flash Attention 2 requested, but CUDA is not available. Falling back to default attention implementation.")
                 return kwargs
+            if not flash_attention_supported_device(device_arg):
+                logger.warning("Flash Attention 2 is unsupported on this device. Falling back to default attention implementation.")
+                return kwargs
             if compute_dtype not in (torch.float16, torch.bfloat16):
                 logger.warning("Flash Attention 2 requires float16 or bfloat16 compute. Falling back to default attention implementation.")
                 return kwargs
@@ -189,7 +189,7 @@ class QwenTorchModel(BaseQwenModel):
         elif device_arg.lower() != "cpu" and not FLASH_ATTENTION_AVAILABLE:
             logger.info(
                 "Flash Attention 2 is not installed. For improved GPU performance with Qwen models, "
-                f"consider running: uv run python install_flash_attn.py. Detection reason: {FLASH_ATTENTION_STATUS}"
+                f"consider running: uv run --no-sync python install_flash_attn.py. Detection reason: {FLASH_ATTENTION_STATUS}"
             )
         return kwargs
 

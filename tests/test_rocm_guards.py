@@ -1,7 +1,9 @@
 """AMD ROCm runtime behavior, FA2 gating, and installer pyproject rewrites."""
 
 import argparse
+import builtins
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -25,11 +27,35 @@ def test_is_rocm_build_detection(monkeypatch):
     assert config.is_rocm_build() is True
 
 
-def test_flash_attention_disabled_on_rocm(monkeypatch):
-    _set_hip(monkeypatch, "6.3.41935")
+def test_flash_attention_available_on_rocm_with_matching_package(monkeypatch):
+    _set_hip(monkeypatch, "7.2.53214")
+    flash = types.ModuleType("flash_attn")
+    flash.__path__ = []
+    padding = types.ModuleType("flash_attn.bert_padding")
+    monkeypatch.setitem(sys.modules, "flash_attn", flash)
+    monkeypatch.setitem(sys.modules, "flash_attn.bert_padding", padding)
+    import transformers.utils
+
+    monkeypatch.setattr(transformers.utils, "is_flash_attn_2_available", lambda: True)
+    available, reason = qwen._check_flash_attention_available()
+    assert available is True
+    assert reason == "available"
+
+
+@pytest.mark.parametrize("loader_error", [ImportError, OSError])
+def test_flash_attention_incompatible_rocm_package_falls_back(monkeypatch, loader_error):
+    _set_hip(monkeypatch, "7.2.53214")
+    original_import = builtins.__import__
+
+    def import_package(name, *args, **kwargs):
+        if name == "flash_attn":
+            raise loader_error("libtorch_cuda.so: cannot open shared object file")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_package)
     available, reason = qwen._check_flash_attention_available()
     assert available is False
-    assert "ROCm" in reason
+    assert "libtorch_cuda.so" in reason
 
 
 def test_nemotron_bnb_allowed_on_rocm(monkeypatch):
@@ -198,9 +224,26 @@ def test_rewrite_is_idempotent():
     assert once == twice
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_rewrite_named_index_preserves_mac_source_and_other_indexes(newline):
+    text = (
+        "[tool.uv.sources]\n"
+        'torch = [{ index = "pytorch", marker = "sys_platform != \'darwin\'" }]\n'
+        '[[tool.uv.index]]\nname = "other"\nurl = "untouched"\n'
+        '[[tool.uv.index]]\nname = "pytorch"\nurl = "old"\nexplicit = true\n'
+    )
+    text = text.replace("\n", newline)
+    out = install_rocm_torch.rewrite_extra_index_url(text, "https://example/rocm7.2")
+    assert 'url = "https://example/rocm7.2"' in out
+    assert 'url = "untouched"' in out
+    assert "sys_platform != 'darwin'" in out
+    assert "explicit = true" in out
+    assert out.replace(newline, "").count("\n") == 0
+
+
 def test_linux_lock_requirement_selects_exact_backend_build():
-    assert install_rocm_torch.linux_torch_requirement(False) == "torch==2.11.0+rocm7.2"
-    assert install_rocm_torch.linux_torch_requirement(True) == "torch==2.11.0+cu130"
+    assert install_rocm_torch.linux_torch_requirement(False) == "torch==2.14.1+rocm7.2"
+    assert install_rocm_torch.linux_torch_requirement(True) == "torch==2.14.1+cu130"
 
 
 def test_rocm_verification_checks_hip_and_gpu_visibility():

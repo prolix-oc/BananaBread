@@ -12,6 +12,7 @@ from transformers.masking_utils import bidirectional_mask_function, causal_mask_
 from transformers.utils import is_flash_attn_2_available
 
 from bananabread.config import logger
+from bananabread.models.attention import flash_attention_supported_device
 
 COMPACT_SDPA = "bananabread_sdpa"
 
@@ -66,9 +67,7 @@ def configure_embedding_attention(model: Any, *, prefer_flash: bool = False) -> 
     underlying = getattr(model, "model", model)
     if not isinstance(underlying, torch.nn.Module):
         return  # e.g. ONNX; batching is independent of the runtime backend.
-    flash_available = (
-        prefer_flash and not getattr(torch.version, "hip", None) and is_flash_attn_2_available()
-    )
+    flash_available = prefer_flash and is_flash_attn_2_available()
     if flash_available:
         try:
             importlib.import_module("flash_attn")
@@ -91,10 +90,9 @@ def configure_embedding_attention(model: Any, *, prefer_flash: bool = False) -> 
         device = next(native.parameters(), torch.empty(0)).device
         if (
             flash_available
-            and device.type == "cuda"
+            and flash_attention_supported_device(device)
             and native.dtype in {torch.float16, torch.bfloat16}
             and getattr(native, "_supports_flash_attn", False)
-            and torch.cuda.get_device_capability(device)[0] >= 8
             and not (
                 sys.platform == "win32"
                 and (

@@ -23,8 +23,8 @@ dependencies = [
     { name = "psutil" },
     { name = "pyyaml" },
     { name = "safetensors" },
-    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "torch", version = "2.11.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.14.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform != 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ca/14/787e5498cd062640f0f3d92ef4ae4063174f76f9afd29d13fc52a319daae/accelerate-1.13.0.tar.gz", hash = "sha256:d631b4e0f5b3de4aff2d7e9e6857d164810dfc3237d54d017f075122d057b236", size = 402835, upload-time = "2026-03-04T19:34:12.359Z" }
 wheels = [
@@ -78,10 +78,10 @@ dependencies = [
     { name = "scipy" },
     { name = "sentence-transformers" },
     { name = "soundfile" },
-    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "torch", version = "2.11.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
-    { name = "torchvision", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "torchvision", version = "0.26.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.14.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform != 'darwin'" },
+    { name = "torchvision", version = "0.29.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "torchvision", version = "0.29.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform != 'darwin'" },
     { name = "tqdm" },
     { name = "transformers" },
     { name = "uvicorn", extra = ["standard"] },
@@ -128,8 +128,10 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.11.0" },
     { name = "sentence-transformers", specifier = ">=6.1.0" },
     { name = "soundfile", specifier = ">=0.12.1" },
-    { name = "torch", specifier = ">=2.9.0,<2.12.0" },
-    { name = "torchvision", specifier = ">=0.24.0" },
+    { name = "torch", marker = "sys_platform != 'darwin'", specifier = ">=2.9.0,<2.15.0", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "torch", marker = "sys_platform == 'darwin'", specifier = ">=2.9.0,<2.15.0", index = "https://pypi.org/simple" },
+    { name = "torchvision", marker = "sys_platform != 'darwin'", specifier = ">=0.24.0", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "torchvision", marker = "sys_platform == 'darwin'", specifier = ">=0.24.0", index = "https://pypi.org/simple" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "transformers", specifier = "==5.20.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0" },
@@ -152,8 +154,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "packaging" },
-    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "torch", version = "2.11.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.14.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/85/b0/d2eb57f5ff40bea2aa4037fcd07b8a8c8e012bbdd36b6f4954c9cb55041d/bitsandbytes-0.50.1-py3-none-macosx_14_0_arm64.whl", hash = "sha256:5bac232206d9568fb560db566b522e230af95ba3fb833a1023744625c66f1d6b", size = 123495, upload-time = "2026-08-13T17:16:21.463Z" },
@@ -492,7 +494,7 @@ name = "cuda-bindings"
 version = "13.3.1"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 dependencies = [
-    { name = "cuda-pathfinder", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
+    { name = "cuda-pathfinder", marker = "(python_full_version == '3.14.*' and sys_platform == 'win32') or (python_full_version < '3.15' and sys_platform != 'darwin' and sys_platform != 'win32')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/67/5e7dba1ba576dd73da5dee894ca076ca5e959450dfff66d6d510a255d1f7/cuda_bindings-13.3.1-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c7855c4868aabc0cfae28abbe83d56734bdfbd08f08fc234ac1912a12858bf49" },
@@ -515,45 +517,51 @@ wheels = [
 
 [[package]]
 name = "cuda-toolkit"
-version = "13.0.2"
+version = "13.0.3.0"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 wheels = [
-    { url = "https://pypi.nvidia.com/cuda-toolkit/cuda_toolkit-13.0.2-py2.py3-none-any.whl", hash = "sha256:b198824cf2f54003f50d64ada3a0f184b42ca0846c1c94192fa269ecd97a66eb" },
+    { url = "https://pypi.nvidia.com/cuda-toolkit/cuda_toolkit-13.0.3.0-py2.py3-none-any.whl", hash = "sha256:d693caaa261214ddd7dbb60d68e71cbed884e68c2be7509778f3051da0b91c3f" },
 ]
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or sys_platform == 'linux'" },
+    { name = "nvidia-cublas", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nvidia-cuda-nvrtc", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or sys_platform == 'linux'" },
+    { name = "nvidia-cuda-runtime", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or sys_platform == 'linux'" },
+    { name = "nvidia-cufft", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nvidia-nvjitlink", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cufile", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or sys_platform == 'linux'" },
+    { name = "nvidia-cuda-cupti", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or sys_platform == 'linux'" },
+    { name = "nvidia-curand", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 cusolver = [
-    { name = "nvidia-cusolver", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or sys_platform == 'linux'" },
+    { name = "nvidia-cublas", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nvidia-cusolver", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nvidia-cusparse", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nvidia-nvjitlink", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or sys_platform == 'linux'" },
+    { name = "nvidia-cusparse", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nvidia-nvjitlink", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or sys_platform == 'linux'" },
+    { name = "nvidia-nvjitlink", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or sys_platform == 'linux'" },
+    { name = "nvidia-cuda-nvrtc", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or sys_platform == 'linux'" },
+    { name = "nvidia-nvtx", marker = "(python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
 [[package]]
@@ -981,8 +989,8 @@ dependencies = [
     { name = "accelerate" },
     { name = "batched" },
     { name = "numpy" },
-    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "torch", version = "2.11.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.14.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform != 'darwin'" },
     { name = "tqdm" },
     { name = "transformers" },
 ]
@@ -1115,11 +1123,14 @@ wheels = [
 
 [[package]]
 name = "nvidia-cublas"
-version = "13.1.0.3"
+version = "13.1.1.3"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
+dependencies = [
+    { name = "nvidia-cuda-nvrtc", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
+]
 wheels = [
-    { url = "https://pypi.nvidia.com/nvidia-cublas/nvidia_cublas-13.1.0.3-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:c86fc7f7ae36d7528288c5d88098edcb7b02c633d262e7ddbb86b0ad91be5df2" },
-    { url = "https://pypi.nvidia.com/nvidia-cublas/nvidia_cublas-13.1.0.3-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:ee8722c1f0145ab246bccb9e452153b5e0515fd094c3678df50b2a0888b8b171" },
+    { url = "https://pypi.nvidia.com/nvidia-cublas/nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:b7a210458267ac818974c53038fbec2e969d5c99f305ab15c72522fa9f001dd5" },
+    { url = "https://pypi.nvidia.com/nvidia-cublas/nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:37936a16db8fe4ac1f065c2139360608a543a09275cb1a1af612e08cfa065436" },
 ]
 
 [[package]]
@@ -1151,14 +1162,14 @@ wheels = [
 
 [[package]]
 name = "nvidia-cudnn-cu13"
-version = "9.19.0.56"
+version = "9.24.0.43"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 dependencies = [
     { name = "nvidia-cublas", marker = "(python_full_version >= '3.14' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/nvidia-cudnn-cu13/nvidia_cudnn_cu13-9.19.0.56-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:6ed29ffaee1176c612daf442e4dd6cfeb6a0caa43ddcbeb59da94953030b1be4" },
-    { url = "https://pypi.nvidia.com/nvidia-cudnn-cu13/nvidia_cudnn_cu13-9.19.0.56-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:d20e1734305e9d68889a96e3f35094d733ff1f83932ebe462753973e53a572bf" },
+    { url = "https://pypi.nvidia.com/nvidia-cudnn-cu13/nvidia_cudnn_cu13-9.24.0.43-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:a6812a554a1ff0413e9c52b84c26c050380649ab9615f9c16bded368ce9f421f" },
+    { url = "https://pypi.nvidia.com/nvidia-cudnn-cu13/nvidia_cudnn_cu13-9.24.0.43-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:71f181cd810e90f9b6023b01186fe82d13d65f0ec098581ee201d39fad769e4b" },
 ]
 
 [[package]]
@@ -1219,20 +1230,20 @@ wheels = [
 
 [[package]]
 name = "nvidia-cusparselt-cu13"
-version = "0.8.0"
+version = "0.8.1"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 wheels = [
-    { url = "https://pypi.nvidia.com/nvidia-cusparselt-cu13/nvidia_cusparselt_cu13-0.8.0-py3-none-manylinux2014_aarch64.whl", hash = "sha256:400c6ed1cf6780fc6efedd64ec9f1345871767e6a1a0a552a1ea0578117ea77c" },
-    { url = "https://pypi.nvidia.com/nvidia-cusparselt-cu13/nvidia_cusparselt_cu13-0.8.0-py3-none-manylinux2014_x86_64.whl", hash = "sha256:25e30a8a7323935d4ad0340b95a0b69926eee755767e8e0b1cf8dd85b197d3fd" },
+    { url = "https://pypi.nvidia.com/nvidia-cusparselt-cu13/nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_aarch64.whl", hash = "sha256:4dca476c50bf4780d46cd0bfbd82e2bc10a08e4fef7950917ce8d7578d22a23f" },
+    { url = "https://pypi.nvidia.com/nvidia-cusparselt-cu13/nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_x86_64.whl", hash = "sha256:786ce87568c303fadb5afcc7102d454cd3040d75f6f8626f5db460d1871f4dd0" },
 ]
 
 [[package]]
 name = "nvidia-nccl-cu13"
-version = "2.28.9"
+version = "2.30.7"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 wheels = [
-    { url = "https://pypi.nvidia.com/nvidia-nccl-cu13/nvidia_nccl_cu13-2.28.9-py3-none-manylinux_2_18_aarch64.whl", hash = "sha256:01c873ba1626b54caa12272ed228dc5b2781545e0ae8ba3f432a8ef1c6d78643" },
-    { url = "https://pypi.nvidia.com/nvidia-nccl-cu13/nvidia_nccl_cu13-2.28.9-py3-none-manylinux_2_18_x86_64.whl", hash = "sha256:e4553a30f34195f3fa1da02a6da3d6337d28f2003943aa0a3d247bbc25fefc42" },
+    { url = "https://pypi.nvidia.com/nvidia-nccl-cu13/nvidia_nccl_cu13-2.30.7-py3-none-manylinux_2_18_aarch64.whl", hash = "sha256:ca786ffa5a647c75d4d1f5cc72a6c4f537947e2ba8823d7c8aaf768e7a7b9f77" },
+    { url = "https://pypi.nvidia.com/nvidia-nccl-cu13/nvidia_nccl_cu13-2.30.7-py3-none-manylinux_2_18_x86_64.whl", hash = "sha256:cefa7fdb9710efd0f39c5f1be1d61ff6fc9a996c451265bd7fbdcf9455ed4b50" },
 ]
 
 [[package]]
@@ -2020,8 +2031,8 @@ dependencies = [
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "tokenizers" },
-    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "torch", version = "2.11.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.14.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform != 'darwin'" },
     { name = "tqdm" },
     { name = "transformers" },
     { name = "typing-extensions" },
@@ -2199,31 +2210,31 @@ wheels = [
 
 [[package]]
 name = "torch"
-version = "2.11.0"
+version = "2.14.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
+    "python_full_version >= '3.15' and sys_platform == 'darwin'",
     "python_full_version < '3.15' and sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "filelock", marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "fsspec", marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "jinja2", marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "networkx", marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "setuptools", marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "sympy", marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
+    { name = "filelock", marker = "sys_platform == 'darwin'" },
+    { name = "fsspec", marker = "sys_platform == 'darwin'" },
+    { name = "jinja2", marker = "sys_platform == 'darwin'" },
+    { name = "networkx", marker = "sys_platform == 'darwin'" },
+    { name = "setuptools", marker = "sys_platform == 'darwin'" },
+    { name = "sympy", marker = "sys_platform == 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform == 'darwin'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6f/8b/69e3008d78e5cee2b30183340cc425081b78afc5eff3d080daab0adda9aa/torch-2.11.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:4b5866312ee6e52ea625cd211dcb97d6a2cdc1131a5f15cc0d87eec948f6dd34", size = 80606338, upload-time = "2026-03-23T18:11:34.781Z" },
-    { url = "https://files.pythonhosted.org/packages/87/89/5ea6722763acee56b045435fb84258db7375c48165ec8be7880ab2b281c5/torch-2.11.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:1e6debd97ccd3205bbb37eb806a9d8219e1139d15419982c09e23ef7d4369d18", size = 80606801, upload-time = "2026-03-23T18:10:18.649Z" },
-    { url = "https://files.pythonhosted.org/packages/db/38/8ac78069621b8c2b4979c2f96dc8409ef5e9c4189f6aac629189a78677ca/torch-2.11.0-cp313-cp313t-macosx_11_0_arm64.whl", hash = "sha256:8b394322f49af4362d4f80e424bcaca7efcd049619af03a4cf4501520bdf0fb4", size = 80959574, upload-time = "2026-03-23T18:10:14.214Z" },
-    { url = "https://files.pythonhosted.org/packages/26/0d/8603382f61abd0db35841148ddc1ffd607bf3100b11c6e1dab6d2fc44e72/torch-2.11.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:01018087326984a33b64e04c8cb5c2795f9120e0d775ada1f6638840227b04d7", size = 80573442, upload-time = "2026-03-23T18:09:10.117Z" },
-    { url = "https://files.pythonhosted.org/packages/bf/46/4419098ed6d801750f26567b478fc185c3432e11e2cad712bc6b4c2ab0d0/torch-2.11.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:8245477871c3700d4370352ffec94b103cfcb737229445cf9946cddb7b2ca7cd", size = 80959460, upload-time = "2026-03-23T18:09:00.818Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/3c/379349820e9a6e713826de3d0b88f07728541bdcabe2a3afd128871cdc4b/torch-2.14.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:420dbf314c180ee4b86e9bc00aee5746a7d6e5bacdd7df925af671ed393f0b2e", size = 127307099, upload-time = "2026-09-30T17:44:10.421Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/11/faaca4f8541c45127b7e0d6bb141221fe944c8466d89986b8466c6c195f9/torch-2.14.1-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:dbe359d705f4d67236743794c296c6dee93a922fd8117eff8c3e880d7d0fb2b9", size = 127315286, upload-time = "2026-09-30T17:52:27.43Z" },
+    { url = "https://files.pythonhosted.org/packages/43/19/23a1aed488423a5055727256b25406e4b93bd2bcf1352bef582b9951c10c/torch-2.14.1-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:cee091caf2a6229e248daf41d18ceebf590ba02d9179205610062c64ee5fef03", size = 127325330, upload-time = "2026-09-30T17:52:54.752Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/bc/1afbd1a22f6023eafcdb9295ac1d97137a7816f54091d693701072da2218/torch-2.14.1-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:06c3ec25f3b497f9a73dc0c36f293f295cfe8d5584fd446238d9a501b30a66d5", size = 127657364, upload-time = "2026-09-30T17:53:53.837Z" },
 ]
 
 [[package]]
 name = "torch"
-version = "2.11.0+cu130"
+version = "2.14.1+cu130"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 resolution-markers = [
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
@@ -2232,65 +2243,67 @@ resolution-markers = [
     "python_full_version < '3.13' and platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version >= '3.15' and sys_platform != 'darwin'",
     "(python_full_version < '3.15' and platform_machine != 'x86_64' and sys_platform == 'linux') or (python_full_version == '3.14.*' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version == '3.14.*' and sys_platform == 'win32') or (python_full_version < '3.15' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')",
-    "python_full_version >= '3.15' and sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "cuda-bindings", marker = "sys_platform == 'linux'" },
+    { name = "cuda-bindings", marker = "python_full_version < '3.15' and sys_platform == 'linux'" },
     { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "sys_platform == 'linux'" },
-    { name = "filelock", marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
-    { name = "fsspec", marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
-    { name = "jinja2", marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
-    { name = "networkx", marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
+    { name = "filelock", marker = "sys_platform != 'darwin'" },
+    { name = "fsspec", marker = "sys_platform != 'darwin'" },
+    { name = "jinja2", marker = "sys_platform != 'darwin'" },
+    { name = "networkx", marker = "sys_platform != 'darwin'" },
     { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'" },
     { name = "nvidia-cusparselt-cu13", marker = "sys_platform == 'linux'" },
     { name = "nvidia-nccl-cu13", marker = "sys_platform == 'linux'" },
     { name = "nvidia-nvshmem-cu13", marker = "sys_platform == 'linux'" },
-    { name = "setuptools", marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
-    { name = "sympy", marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
-    { name = "triton", marker = "sys_platform == 'linux'" },
-    { name = "typing-extensions", marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
+    { name = "setuptools", marker = "sys_platform != 'darwin'" },
+    { name = "sympy", marker = "sys_platform != 'darwin'" },
+    { name = "triton", marker = "python_full_version < '3.15' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:252f237d417fac3ba59b1635815c1f035a8241f2af038f2c076ed430932d89f1", upload-time = "2026-04-27T20:01:46Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:96911323dcfcd42028c7e8edde7bdf25bb187753234e8775f0f3f112e86a22db", upload-time = "2026-04-27T20:02:14Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp312-cp312-win_amd64.whl", hash = "sha256:ef8beae16d781c3244ef28dc7bee6d8871c26bbde65d5bf66e902cb61972c4ab", upload-time = "2026-04-27T20:03:28Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:c3d60f79666b9101e3914a2e5dec2e81eac834e13cae0bcf59e94dc1a465f756", upload-time = "2026-04-27T20:04:49Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:554461b76f21211927c776056bcb0b00fb42972364794b686d768ebb0b586366", upload-time = "2026-04-27T20:05:21Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp313-cp313-win_amd64.whl", hash = "sha256:339801f2163698a53c7fb3c91883e7f44331d22c34d45acfbce4eff71f2332fa", upload-time = "2026-04-27T20:06:44Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:a33905bc3e093b25d2b019181cf834f7f7d4c562739e13dd36a798ecb2e411b0", upload-time = "2026-04-27T20:08:23Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:6fd10ed484eb695312ae829719888bb9f6c7f5e8503528e3e8ad1b98a45296c2", upload-time = "2026-04-27T20:08:56Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp313-cp313t-win_amd64.whl", hash = "sha256:21d2734fd02af45d19bb88c0ff2e86b238ce73f7bde6003ade7f1454ae299198", upload-time = "2026-04-27T20:10:20Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:efcdfe08ec2c9db28b50cc7329fed0c90bb74fa6fbce0f7eb12e20db2279a40f", upload-time = "2026-04-27T20:11:48Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:6ccc36928fd17c86011b46fb81bd2c85475f1fbf967dde758672d6a8d83a212a", upload-time = "2026-04-27T20:12:18Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp314-cp314-win_amd64.whl", hash = "sha256:d886f1c2f4406d7ad0c59f254ceb0a9c47a03e97a7c704b778a2066d752dde29", upload-time = "2026-04-27T20:13:41Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:bdb20f8b04e9fcaba2f354c3026667bebb74de8a92526b706aa735e2df334c24", upload-time = "2026-04-27T20:15:02Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:28f952cd4a927616ad9d77644a93237d1ca50bf30d0cf26962b9162d8a00ffa0", upload-time = "2026-04-27T20:15:30Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp314-cp314t-win_amd64.whl", hash = "sha256:d0a857adc487f275bfc9e7cdc51d12940613ba18b6362da214e20e9e3871f817", upload-time = "2026-04-27T20:16:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:6afc5e5944fb0bd927e08d32a11f71d19154001f1c81fa00a6ed81a217451795", upload-time = "2026-09-30T20:23:37Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:5359b255ac68c0cabb8293952b38e00f0d1a570815cd87f19b61af702c071410", upload-time = "2026-09-30T20:24:05Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp312-cp312-win_amd64.whl", hash = "sha256:0a09031e93632d14ef49553acd6211ece3ae9cdc0969a369b8c24e3cc4d15be9", upload-time = "2026-09-30T20:25:17Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:36d7d3065e072a8b190460327bc68afd0f91592af2433f65bd5dd7d86738f38d", upload-time = "2026-09-30T20:26:24Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:3a78ea0a4d6605c1e351b33ab8aabe44ddb815239cec00cc6f85555d26c0a5a5", upload-time = "2026-09-30T20:26:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp313-cp313-win_amd64.whl", hash = "sha256:f064c797bb497daf2b2b5e32b6d794abef087e3f24e758e6c6f8010bd2698319", upload-time = "2026-09-30T20:27:54Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:8d614da5333b9ea187589a53874c5bc687d893df86fb2a7b9ebdfeacd62b45f7", upload-time = "2026-09-30T20:28:58Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:5206fa83163aa71dc0186637b2aa2ec3fb7114892039fdde3c91bf570bd23ba8", upload-time = "2026-09-30T20:29:22Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp314-cp314-win_amd64.whl", hash = "sha256:e25757e423be3c107a36d7495fa5aeb021b9ab506457cd7c7e068505f0283ae0", upload-time = "2026-09-30T20:30:23Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:0a6ff5419345f79bb79a5fd7b33e01b846135ef63b901c8233289d07a88bd839", upload-time = "2026-09-30T20:31:38Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:f143ff078be3bfd41579a4557a1ebcf01506f8223fad3ac68ce7bb6e88f96a12", upload-time = "2026-09-30T20:32:06Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp314-cp314t-win_amd64.whl", hash = "sha256:70b0704f5dad3d3680e4fdea49bf535ccc75d11f11bbb7c52c93d40ca02ed85d", upload-time = "2026-09-30T20:33:13Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp315-cp315-manylinux_2_28_aarch64.whl", hash = "sha256:3798773468aa14f5a889cd1b5a8790e5d363ab51d5b5b8ba4803a099c9c0ab2d", upload-time = "2026-09-30T20:34:26Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:9d8f7d2b1bad5c3da6dae63af6904c52996ccb9720a04b59a9d508c3fdc9d864", upload-time = "2026-09-30T20:34:51Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp315-cp315-win_amd64.whl", hash = "sha256:a2c434318e3c84b52a7ed72c868b0d4930f9ddffb9b1eb97b32137f2a61ab075", upload-time = "2026-09-30T20:35:56Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp315-cp315t-manylinux_2_28_aarch64.whl", hash = "sha256:d4079b327a96c256b0882ed421338be6f6dc39d6a974e47d4d4986d6f8f71966", upload-time = "2026-09-30T20:36:57Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:51d68598745b384e4c84d4731ed650f3bfd5e8368368d396ba457c64ce35df9e", upload-time = "2026-09-30T20:37:22Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp315-cp315t-win_amd64.whl", hash = "sha256:a4f38677af2606e23bc85b166a08224b207445895873cfe2dd0c50c1300ec2d2", upload-time = "2026-09-30T20:38:30Z" },
 ]
 
 [[package]]
 name = "torchvision"
-version = "0.26.0"
+version = "0.29.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
+    "python_full_version >= '3.15' and sys_platform == 'darwin'",
     "python_full_version < '3.15' and sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "pillow", marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
-    { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.15' and sys_platform == 'darwin'" },
+    { name = "numpy", marker = "sys_platform == 'darwin'" },
+    { name = "pillow", marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ae/e7/56b47cc3b132aea90ccce22bcb8975dec688b002150012acc842846039d0/torchvision-0.26.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:c409e1c3fdebec7a3834465086dbda8bf7680eff79abf7fd2f10c6b59520a7a4", size = 1863502, upload-time = "2026-03-23T18:12:57.326Z" },
-    { url = "https://files.pythonhosted.org/packages/da/80/0762f77f53605d10c9477be39bb47722cc8e383bbbc2531471ce0e396c07/torchvision-0.26.0-cp313-cp313-macosx_12_0_arm64.whl", hash = "sha256:5d63dd43162691258b1b3529b9041bac7d54caa37eae0925f997108268cbf7c4", size = 1860809, upload-time = "2026-03-23T18:12:47.629Z" },
-    { url = "https://files.pythonhosted.org/packages/66/28/b4ad0a723ed95b003454caffcc41894b34bd8379df340848cae2c33871de/torchvision-0.26.0-cp313-cp313t-macosx_12_0_arm64.whl", hash = "sha256:358fc4726d0c08615b6d83b3149854f11efb2a564ed1acb6fce882e151412d23", size = 1951973, upload-time = "2026-03-23T18:12:48.781Z" },
-    { url = "https://files.pythonhosted.org/packages/7f/c8/9bffa9c7f7bdf95b2a0a2dc535c290b9f1cc580c3fb3033ab1246ffffdeb/torchvision-0.26.0-cp314-cp314-macosx_12_0_arm64.whl", hash = "sha256:eb61804eb9dbe88c5a2a6c4da8dec1d80d2d0a6f18c999c524e32266cb1ebcd3", size = 1860813, upload-time = "2026-03-23T18:12:39.636Z" },
-    { url = "https://files.pythonhosted.org/packages/45/8f/1f0402ac55c2ae15651ff831957d083fe70b2d12282e72612a30ba601512/torchvision-0.26.0-cp314-cp314t-macosx_12_0_arm64.whl", hash = "sha256:b7d3e295624a28b3b1769228ce1345d94cf4d390dd31136766f76f2d20f718da", size = 1860826, upload-time = "2026-03-23T18:12:34.1Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/f8/855c7b326ed17a8dac4a03e8e6fec33ef6728e4baa00d816cf1227bb6681/torchvision-0.29.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:3b6eb9d2f8fe9b93d9d37637749df361efeed133d96ddd503184a1b5b12bb27f", size = 1813847, upload-time = "2026-09-30T17:57:01.009Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/85/33819e5ed0caf494a5c0caa6c72bcd9d5bd22c68480d636288832d9d5f55/torchvision-0.29.1-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:b0b3de76f2ee5678b7950ba9971cf72d9c5887cd7993db61788552f371686fed", size = 1813847, upload-time = "2026-09-30T17:57:17.586Z" },
+    { url = "https://files.pythonhosted.org/packages/49/d3/41d167245bc87808eacb730042142649ac22a565200b1ce843462e954f37/torchvision-0.29.1-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:c33cbd596afa13c24de752ead437eb5da48285efd6dc2a06543948821bfde57a", size = 1813852, upload-time = "2026-09-30T17:57:21.646Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/f8/5133682a7e5e7e052f7fd9e5457a61364601096708b7c1d37462653d1d7b/torchvision-0.29.1-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:8b26ff2c61cd1da60d74cf704cae6007bc38902a60d4a7068fe327db1cb45c62", size = 1813854, upload-time = "2026-09-30T17:57:28.127Z" },
 ]
 
 [[package]]
 name = "torchvision"
-version = "0.26.0+cu130"
+version = "0.29.1+cu130"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 resolution-markers = [
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
@@ -2299,29 +2312,31 @@ resolution-markers = [
     "python_full_version < '3.13' and platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version >= '3.15' and sys_platform != 'darwin'",
     "(python_full_version < '3.15' and platform_machine != 'x86_64' and sys_platform == 'linux') or (python_full_version == '3.14.*' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version == '3.14.*' and sys_platform == 'win32') or (python_full_version < '3.15' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')",
-    "python_full_version >= '3.15' and sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
-    { name = "pillow", marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
-    { name = "torch", version = "2.11.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "python_full_version >= '3.15' or sys_platform != 'darwin'" },
+    { name = "numpy", marker = "sys_platform != 'darwin'" },
+    { name = "pillow", marker = "sys_platform != 'darwin'" },
+    { name = "torch", version = "2.14.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:e2b39db78be674ee4ce7e921f54b70e5c281594c9267d981c061684ed38df936", upload-time = "2026-03-23T15:36:26Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:0f030a9bd8ada1a31b7111ea1589c1ecb5fa0884fee700a203e731b4cf378a98", upload-time = "2026-03-23T15:36:26Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp312-cp312-win_amd64.whl", hash = "sha256:a3578f7c8e8a2724306c68c56873a1675fa7ce45471e18235c720a2ed242fe44", upload-time = "2026-04-09T23:21:53Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:3af2c699719cc0e2518bf317664200e5a987fb75a25b9b3bf3817a4796ddd64f", upload-time = "2026-03-23T15:36:26Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:441a98bed4fff1d54b8450499e377e1a605bec31f2ecb1a38a340f95dcc83897", upload-time = "2026-03-23T15:36:26Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp313-cp313-win_amd64.whl", hash = "sha256:64de855465d6de60583e776889fad9412480f9f9e04fdd8d17ae96fa93864e9a", upload-time = "2026-04-09T23:21:54Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:c3ac485da79552b4f579c525c826f7a63288b0d1cafc1201b16e1148bfdea69a", upload-time = "2026-03-23T15:36:26Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:110659ff38cd1d2ca0ac6e6a0f2c842fcb5fe739dfe65ff7456a12b2c4dce775", upload-time = "2026-03-23T15:36:26Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp313-cp313t-win_amd64.whl", hash = "sha256:a7e19c3ab5c6d8e3c9f8c6d427f6b8862dfb8227ea4a758ea7a709951daf2f0d", upload-time = "2026-04-09T23:21:55Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:13fe3dee74a9ee31b551b10a8b4113d9bc5212bb0572a07af88b34a5d25d9701", upload-time = "2026-03-23T15:36:26Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:8d6a83a639d14f7e84f6b838a17e26f9ce41cdbe3dfe0c29ef74b32eb398ba28", upload-time = "2026-03-23T15:36:26Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp314-cp314-win_amd64.whl", hash = "sha256:ab671ffe837aff470baad6af97133ea5a49f8ea2383832550e510a63caf711e4", upload-time = "2026-04-09T23:21:56Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:cd89effa98de436ec22ccbbd278cdadc0fdec8eb81a396150f50b321c2230866", upload-time = "2026-03-23T15:36:26Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:aacac4d990ac794f3abeca66cc26affb42fbeba9789e5c351183665bab4902d2", upload-time = "2026-03-23T15:36:26Z" },
-    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.26.0%2Bcu130-cp314-cp314t-win_amd64.whl", hash = "sha256:23b9666084c72d07fc715001880b648e6a410796d1925c10f054f1ee034f5cc7", upload-time = "2026-04-09T23:21:57Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:3fe32cb76816c80355087a2e4d2a6d40ba01cc7b59a5732be57d1e71b4539f8e", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:ce6b51d5ffad41eb1d22ff61cb304415a95c1bfa431dc00a80c8ece06822c3b7", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp312-cp312-win_amd64.whl", hash = "sha256:14d3195e5e657fef46d08de0d3470da03a983fa383d8aa279e36e47e95d991c6", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:fe6b3eec6932af8556b00f7588433a83069dc58c729f33fa868f75eb0e970eaa", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:47f000acb2449b281d43707c90116a30c7fa002c7f7bbf6976bcc2562dd5787b", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp313-cp313-win_amd64.whl", hash = "sha256:8c3f9aea88ab9d28be63d8bc09103d49dccfae26965d8a94c99522417b8c8db1", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:d8170a75be946438b1e49a3958d6a08a95d4fdb5f9cb4f5739a96985ee424c57", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:a5bdad667005c14e442ddf7933c048e021834afaf48e64b920caeb6bd1cd7d15", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp314-cp314-win_amd64.whl", hash = "sha256:cfaecff5634e92989938b3da084e3f624d5ce8179446f42abf50c425cadd8a63", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:cce6811869f340e35656075a6d62d080d54aab89eaba989424034c6649f0e7b0", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:28461ccbec1726053454d0b291ac27fa5a9362f2b2503d8f62931f20f3121d26", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp314-cp314t-win_amd64.whl", hash = "sha256:17a28fce88a4807c395a6ad8676c7074ae8f01c6dc269739af592dbd66229a74", upload-time = "2026-09-30T15:46:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp315-cp315-manylinux_2_28_aarch64.whl", hash = "sha256:5702e3088ddc4bdbd1dadd4a4b403b3f967425120a004812b97f4e4a1d47e184", upload-time = "2026-09-30T15:46:28Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:7ba622330caec9f4e0ce704aa04dfdcc1fd13e4505fb67074ad7a170d084fe3e", upload-time = "2026-09-30T15:46:28Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp315-cp315-win_amd64.whl", hash = "sha256:dc329416b4abdc8bd6eb23977614f4dd9ca813e71645bd474d840c324d5a3bbc", upload-time = "2026-09-30T15:46:28Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp315-cp315t-manylinux_2_28_aarch64.whl", hash = "sha256:17dd569037c02a72890ab0d72819a3ede87d7d9e9ba658e663eb4114a87666c4", upload-time = "2026-09-30T15:46:28Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:ee88362d1285c07ed2835d003a93f2b89570d58bb57199828fc99c12be08acbb", upload-time = "2026-09-30T15:46:28Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu130/torchvision-0.29.1%2Bcu130-cp315-cp315t-win_amd64.whl", hash = "sha256:b04498d9ea9dbd25cad4447ff638b0fb6719817c0997987a55f4bdef71043b66", upload-time = "2026-09-30T15:46:28Z" },
 ]
 
 [[package]]
@@ -2358,19 +2373,21 @@ wheels = [
 
 [[package]]
 name = "triton"
-version = "3.6.0"
+version = "3.8.0"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 wheels = [
-    { url = "https://download-r2.pytorch.org/whl/triton-3.6.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:6e42d084864d12b8784736fe51a0cd05f6cc56775b25c8102c9d80c421f4e298", upload-time = "2026-01-22T23:13:34Z" },
-    { url = "https://download-r2.pytorch.org/whl/triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6f5928e6d44c34a97bbe164cceddc0ef2007121c89ebcfba5415cf452de7ee9f", upload-time = "2026-01-22T23:13:42Z" },
-    { url = "https://download-r2.pytorch.org/whl/triton-3.6.0-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:58d57d6796b0004076315433526fe9d4af42044d430afdee1e6cd42a76bd6d09", upload-time = "2026-01-22T23:13:51Z" },
-    { url = "https://download-r2.pytorch.org/whl/triton-3.6.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0075039ff27765480083b1a109999bf27110f3542f1f9fad95f0f9065a36da79", upload-time = "2026-01-22T23:14:00Z" },
-    { url = "https://download-r2.pytorch.org/whl/triton-3.6.0-cp313-cp313t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:29ff9ec4c96f405bf2735c531af27f8cc2215927440e52fb1fbc8014961d5d12", upload-time = "2026-01-22T23:14:09Z" },
-    { url = "https://download-r2.pytorch.org/whl/triton-3.6.0-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a619c81f8e77116b1d10aec34d62db72daa5c0fb70a6478c9afab25edb729c52", upload-time = "2026-01-22T23:14:19Z" },
-    { url = "https://download-r2.pytorch.org/whl/triton-3.6.0-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:20ed2f770f7217b8a994cba99e7cac37e7be735a3991344990b80ab4fea964c4", upload-time = "2026-01-22T23:14:28Z" },
-    { url = "https://download-r2.pytorch.org/whl/triton-3.6.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b6d800bda666ebbe7ec2146e3f5eb271ee87f8fac724011dc7f25dee9bfb5f7f", upload-time = "2026-01-22T23:14:40Z" },
-    { url = "https://download-r2.pytorch.org/whl/triton-3.6.0-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:89b87d2837849a9bcd3d960ad2e3dac0345c6e1359b9859e29f68083cbda9b1d", upload-time = "2026-01-22T23:14:51Z" },
-    { url = "https://download-r2.pytorch.org/whl/triton-3.6.0-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:621c0e5973d834507ec69dcf909f35f0b02c5df490fde100433cef83359b7eeb", upload-time = "2026-01-22T23:15:01Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp312-cp312-linux_aarch64.whl", hash = "sha256:bc34cb0bf49c074ce8c12470169f0c4349aec588a91a8f677d95ccd917976f71", upload-time = "2026-09-02T00:45:34Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:07a88b13e4f7e8b1769094238ab75109a5db2a8160a24ddc49c24d2efa44cb58", upload-time = "2026-09-02T00:45:41Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp313-cp313-linux_aarch64.whl", hash = "sha256:c1884ba5e90fc4108fd8191239bcb8305de753251fee3a58da6381b874f234cb", upload-time = "2026-09-02T00:45:49Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4608ffa1182461eb33cd1d655cf122225fb14d4d055a7e7549a779a6d0e94b04", upload-time = "2026-09-02T00:45:56Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp314-cp314-linux_aarch64.whl", hash = "sha256:f4da08a8da64fdebccfeed7a833e473cfb7c670f585a2fe1faf8d49beab3e1bd", upload-time = "2026-09-02T00:46:04Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:489efe56641e1bc5d3df3c9f3ba9bcc7bb8dee40691ae88ccf549388737951a2", upload-time = "2026-09-02T00:46:10Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp314-cp314t-linux_aarch64.whl", hash = "sha256:2ec2140bcaa058ef161bf8a1522d980f10202c2f62d23f893c0be8290d20ac4f", upload-time = "2026-09-02T00:46:18Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:aee2fb2acf63ecf929b068ed11b88a31fdac0d27008ff4b04ab65aa4cb514994", upload-time = "2026-09-02T00:46:25Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp315-cp315-linux_aarch64.whl", hash = "sha256:36a5b33463ec87b9504793fe3f5e776cbad272cabf9ba517d06bae7e9a15d9b1", upload-time = "2026-09-02T00:46:31Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp315-cp315-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c0ded038dd6920ece820be4d56183d8db8d818c39fb4a0916247665a164a7aad", upload-time = "2026-09-02T00:46:38Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp315-cp315t-linux_aarch64.whl", hash = "sha256:6973b07d551b0fa2f6816d3cb30bffb85dc76c32987c2c5e3ed9e1e150a93cc9", upload-time = "2026-09-02T00:46:45Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton-3.8.0-cp315-cp315t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3025e1fd8c2f8657837ec7bd09acb527044d25b03bcc0554ade5232527268e31", upload-time = "2026-09-02T00:46:52Z" },
 ]
 
 [[package]]

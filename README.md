@@ -384,7 +384,7 @@ All available options (grouped by purpose):
 | `embedding_dim` | `1024` | Output dimensions for MixedBread, Nemotron, EmbeddingGemma, and HF models (truncation where supported); EmbeddingGemma maps the shared default to 768 |
 | `embedding_batch_size` | `8` | Maximum inputs per embedding inference batch, for every model |
 | `embedding_batch_max_tokens` | `8192` | Maximum padded tokens per batch; longer individual inputs run alone |
-| `embedding_flash_attention` | `false` | Prefer FlashAttention 2 on compatible CUDA embedding backbones; requires `flash_attn` |
+| `embedding_flash_attention` | `false` | Prefer FlashAttention 2 on compatible CUDA/HIP embedding backbones; requires `flash_attn` |
 | **CPU / threading** | | |
 | `use_cores` | `null` | Limit to N CPU cores (`null` = use all) |
 | `cpu_socket` | `null` | Pin to a specific CPU socket (multi-socket systems) |
@@ -420,7 +420,7 @@ All available options (grouped by purpose):
 
 ## GPU Setup (Optional)
 
-If you have an NVIDIA or AMD GPU, or an Apple Silicon Mac, you can run models on its accelerator. NVIDIA Turing and newer GPUs work out of the box with the Torch 2.11 + CUDA 13 wheel pinned in `uv.lock`. AMD uses PyTorch's ROCm builds — see [AMD GPUs (ROCm)](#amd-gpus-rocm). Apple Silicon uses PyTorch MPS — see [Apple Silicon (Metal)](#apple-silicon-metal). On GPUs without native bfloat16 support, including Turing, BananaBread automatically changes model compute dtype to float16 for Qwen and Nemotron; EmbeddingGemma uses FP32 because FP16 is unsafe for it.
+If you have an NVIDIA or AMD GPU, or an Apple Silicon Mac, you can run models on its accelerator. NVIDIA Turing and newer GPUs work out of the box with the Torch 2.14 + CUDA 13 wheel pinned in `uv.lock`. AMD uses PyTorch's ROCm builds — see [AMD GPUs (ROCm)](#amd-gpus-rocm). Apple Silicon uses PyTorch MPS — see [Apple Silicon (Metal)](#apple-silicon-metal). On GPUs without native bfloat16 support, including Turing, BananaBread automatically changes model compute dtype to float16 for Qwen and Nemotron; EmbeddingGemma uses FP32 because FP16 is unsafe for it.
 
 ### Basic GPU usage
 
@@ -433,6 +433,8 @@ uv run bananabread-emb --embedding-device cuda:0 --rerank-device cuda:1
 ```
 
 ### Apple Silicon (Metal)
+
+The Torch 2.14 macOS wheels require macOS 14 or newer.
 
 Apple Silicon Macs can run Qwen, Nemotron, Nemotron-3, and EmbeddingGemma on MPS with optional 8-bit or 4-bit affine weight quantization. The Metal kernels keep quantized linear weights on the GPU and are downloaded from Hugging Face on first use. BananaBread loads version 2 of `kernels-community/mlx-quantization-metal-kernels` with `kernels>=0.17`, avoiding Transformers' older version-1 pin and its upgrade warning. Use 8-bit when embedding quality is the priority; 4-bit saves more unified memory but should be evaluated against your retrieval corpus.
 
@@ -451,7 +453,7 @@ Metal quantization requires an Apple Silicon Mac with MPS available. Flash Atten
 
 ### AMD GPUs (ROCm)
 
-PyTorch's ROCm builds expose AMD GPUs through the same `cuda` device API, so every `--embedding-device cuda` / `--rerank-device cuda` flag works unchanged, and BananaBread detects ROCm builds at startup. Flash Attention 2 prebuilt wheels are CUDA builds, so BananaBread disables FA2 on ROCm and falls back to SDPA. The `cuda-quant` extra retains its existing name but installs bitsandbytes 0.50.1 or newer, whose prebuilt wheels support ROCm 7.2 and the `gfx1100`, `gfx1200`, and `gfx1201` GPU targets.
+PyTorch's ROCm builds expose AMD GPUs through the same `cuda` device API, so every `--embedding-device cuda` / `--rerank-device cuda` flag works unchanged, and BananaBread detects ROCm builds at startup. Linux x86_64 ROCm 7.2 installations can also use the optional Radeon-capable Flash Attention 2 wheels described below; SDPA remains the default. The `cuda-quant` extra retains its existing name but installs bitsandbytes 0.50.1 or newer, whose prebuilt wheels support ROCm 7.2 and the `gfx1100`, `gfx1200`, and `gfx1201` GPU targets.
 
 #### Linux
 
@@ -469,15 +471,15 @@ must show a non-empty HIP version, the AMD GPU name, and the `.venv` Python path
 
 Because the lockfile itself now contains the ROCm build, plain `uv run bananabread-emb --embedding-device cuda` works afterwards — no extra flags. To switch back to NVIDIA CUDA later: `uv run python install_rocm_torch.py --restore-cuda`.
 
-Why the index matters: the installer asks uv for the exact `torch==2.11.0+rocm7.2` and `torchvision==0.26.0+rocm7.2` builds so missing or incompatible ROCm wheels produce a resolution error instead of silently falling back to another backend. Both packages must be switched together: torchvision's `torch==2.11.0` dependency also accepts ROCm torch, even when torchvision itself came from PyPI or a CUDA index. The official ROCm wheels are Linux x86_64. AMD supports the RX 7900 XTX (`gfx1100`), RX 9070 series (`gfx1201`), and RX 9060 series (`gfx1200`) on Ubuntu 24.04.3, Ubuntu 22.04.5, RHEL 10.1, and RHEL 9.7; see the [ROCm 7.2 system requirements](https://rocm.docs.amd.com/projects/install-on-linux/en/docs-7.2.0/reference/system-requirements.html#supported-gpus).
+Why the index matters: the installer routes both packages through a named PyTorch index and selects the exact `torch==2.14.1+rocm7.2` and `torchvision==0.29.1+rocm7.2` builds so missing or incompatible ROCm wheels produce a resolution error instead of silently falling back to another backend. Both packages must be switched together: torchvision's `torch==2.14.1` dependency also accepts ROCm torch, even when torchvision itself came from PyPI or a CUDA index. The official ROCm wheels are Linux x86_64. AMD supports the RX 7900 XTX (`gfx1100`), RX 9070 series (`gfx1201`), and RX 9060 series (`gfx1200`) on Ubuntu 24.04.3, Ubuntu 22.04.5, RHEL 10.1, and RHEL 9.7; see the [ROCm 7.2 system requirements](https://rocm.docs.amd.com/projects/install-on-linux/en/docs-7.2.0/reference/system-requirements.html#supported-gpus).
 
-The ROCm 7.2 index also carries newer Torch releases, but still carries 2.11.0.
-Commands that sort the index and use `tail` only display its newest releases;
-they do not show that the pinned wheel disappeared.
+The ROCm 7.2 index contains multiple Torch releases. Inspect the full wheel
+filename when checking availability; commands that sort the index and use `tail`
+only display the last few entries.
 
 #### Windows
 
-Windows AMD users are no longer stuck on CPU: AMD ships an official **PyTorch on Windows** build (ROCm 7.2.1, `torch 2.9.1+rocm7.2.1`). This remains a supported exception to BananaBread's shared Torch 2.11 baseline. The wheels aren't on a pip index, though; they're direct downloads from `repo.radeon.com`, so `install_rocm_torch.py` swaps them into the venv for you:
+Windows AMD users are no longer stuck on CPU: AMD ships an official **PyTorch on Windows** build (ROCm 7.2.1, `torch 2.9.1+rocm7.2.1`). This remains a supported exception to BananaBread's shared Torch 2.14 baseline. The wheels aren't on a pip index, though; they're direct downloads from `repo.radeon.com`, so `install_rocm_torch.py` swaps them into the venv for you:
 
 ```powershell
 # If you already have a .venv from the NVIDIA/CUDA setup, delete it first.
@@ -507,23 +509,25 @@ Other Windows notes from AMD: it's inference-only (fine for BananaBread), and LL
 
 Flash Attention 2 makes GPU inference faster and uses less memory. It's optional — everything works without it, just a bit slower on GPU.
 
-**Requires:** NVIDIA Ampere GPU or newer (RTX 3000 series or newer). Turing GPUs remain supported by BananaBread but use SDPA instead. The prebuilt wheels below are CUDA builds — on AMD, leave Flash Attention off; BananaBread falls back to SDPA automatically.
+**Requires:** Torch 2.14.x and Python 3.12 or 3.13, plus either NVIDIA Ampere or newer with CUDA 13.0, or Linux x86_64 with ROCm 7.2 and a supported AMD GPU. NVIDIA Turing GPUs use SDPA. AMD's native Windows Torch 2.9.1 build also continues to use SDPA; these ROCm FA2 wheels are Linux-only.
+
+The helper selects **FA2 2.8.3** for CUDA and the **2.8.4 ROCm build pinned to upstream commit `4a948e9`** for AMD. The ROCm wheel is built with Composable Kernel and includes CDNA targets `gfx90a`, `gfx942`, `gfx950` and Radeon RDNA targets `gfx1100`, `gfx1101`, `gfx1102`, `gfx1150`, `gfx1151`, `gfx1200`, `gfx1201`. Radeon support comes from that upstream commit rather than a released FA2 tag. See the [wheel repository](https://github.com/mjun0812/flash-attention-prebuild-wheels#packages) for build details.
 
 #### Installing a prebuilt wheel
 
 Use the helper script to install only the precompiled wheel for your current platform and Python version:
 
 ```bash
-uv run python install_flash_attn.py
+uv run --no-sync python install_flash_attn.py
 ```
 
 Preview what it would install:
 
 ```bash
-uv run python install_flash_attn.py --dry-run
+uv run --no-sync python install_flash_attn.py --dry-run
 ```
 
-The script detects your platform, Python version, and PyTorch setup, then installs the right precompiled wheel. This avoids declaring every platform wheel in `pyproject.toml`, which can make uv download multiple large Flash Attention wheels while resolving the project.
+Install ROCm torch first with `install_rocm_torch.py` on AMD Linux. On NVIDIA, run `uv sync` to apply the Torch 2.14 upgrade before using the helper. The script detects your platform, Python version, and CUDA/HIP build, rejects incompatible combinations, and installs the matching precompiled wheel. It then runs fixed-length and variable-length GPU attention and compares the results with PyTorch SDPA; an import alone does not establish GPU support. This avoids declaring every platform wheel in `pyproject.toml`, which can make uv download multiple large Flash Attention wheels while resolving the project.
 
 If you're using pip outside uv, run `python install_flash_attn.py` from the cloned repo. **Do not** run `pip install flash-attn` on Windows; it will try to compile from source and almost certainly fail.
 
@@ -531,10 +535,10 @@ You can also install a wheel directly:
 
 ```bash
 # Windows + Python 3.13
-pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3%2Bcu130torch2.11-cp313-cp313-win_amd64.whl
+pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.2/flash_attn-2.8.3%2Bcu130torch2.14-cp313-cp313-win_amd64.whl
 
 # Windows + Python 3.12
-pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3%2Bcu130torch2.11-cp312-cp312-win_amd64.whl
+pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.2/flash_attn-2.8.3%2Bcu130torch2.14-cp312-cp312-win_amd64.whl
 ```
 
 Once installed, enable it:
@@ -547,9 +551,9 @@ uv run bananabread-emb --embedding-model nemotron-3.5 --embedding-device cuda --
 uv run bananabread-emb --embedding-model qwen --qwen-flash-attention --embedding-device cuda
 ```
 
-The shared `--embedding-flash-attention` option selects FlashAttention 2 per compatible CUDA backbone using FP16 or BF16. Unsupported runtimes or backbones retain their supported attention implementation, including compact SDPA masks. Transformers is pinned to **5.20.0** to include the Nemotron-3.5 image-input fixes. Installing Transformers alone does not install `flash_attn`; run the installer above in the same environment. CPU, Apple Silicon, and ROCm continue to use their supported backends.
+The shared `--embedding-flash-attention` option selects FlashAttention 2 per compatible CUDA/HIP backbone using FP16 or BF16. Unsupported runtimes or backbones retain their supported attention implementation, including compact SDPA masks. Transformers is pinned to **5.20.0** to include the Nemotron-3.5 image-input fixes. Installing Transformers alone does not install `flash_attn`; run the installer above in the same environment. CPU, Apple Silicon, unsupported GPUs, and installations without working FA2 retain their supported backends.
 
-At startup, BananaBread only enables Flash Attention 2 when `flash_attn` imports in the same Python environment, Transformers reports FA2 support, CUDA is available, the target device is not CPU, and Qwen compute dtype is `float16` or `bfloat16`. If any check fails, BananaBread logs the reason and falls back to the default attention implementation.
+At startup, BananaBread only enables Flash Attention 2 when `flash_attn` imports in the same Python environment, Transformers reports FA2 support, a supported CUDA/HIP device is available, and Qwen compute dtype is `float16` or `bfloat16`. If any check fails, BananaBread logs the reason and falls back to the default attention implementation.
 
 > **Windows + bitsandbytes users:** Flash Attention 2 is automatically disabled when using `torch-bnb-8bit` or `torch-bnb-4bit` on Windows because the combination triggers a known CUDA compatibility issue (`torch.AcceleratorError: CUDA error: unknown error`). BananaBread falls back to SDPA attention automatically.
 
@@ -762,8 +766,8 @@ package metadata without importing torchvision (which would trigger the error):
 uv run --no-sync python -c "import importlib.metadata as m; print('torch', m.version('torch')); print('torchvision', m.version('torchvision'))"
 ```
 
-On Linux, the installer selects `torch 2.11.0+rocm7.2` together with
-`torchvision 0.26.0+rocm7.2`. Update your checkout and rerun
+On Linux, the installer selects `torch 2.14.1+rocm7.2` together with
+`torchvision 0.29.1+rocm7.2`. Update your checkout and rerun
 `uv run --no-sync python install_rocm_torch.py` to repair a mismatched pair.
 Verification prints both installed versions before importing torchvision and
 enables its native-extension loading warnings. If the versions already match,
@@ -791,7 +795,7 @@ available, instead of leaving the NVML warning as the only clue.
 `pip install flash-attn` tries to compile from source on Windows and will usually fail. Use the helper script instead:
 
 ```bash
-uv run python install_flash_attn.py
+uv run --no-sync python install_flash_attn.py
 ```
 
 See [Flash Attention 2](#flash-attention-2) for more details.

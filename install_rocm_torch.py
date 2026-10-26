@@ -41,12 +41,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-# Linux: PyTorch 2.11 is the first shared release published for both ROCm 7.2
-# and CUDA 13.0.
+# Linux: keep the shared Torch 2.14 baseline aligned with the ROCm FA2 wheels.
 ROCM_INDEX = "https://download.pytorch.org/whl/rocm7.2"
 CUDA_INDEX = "https://download.pytorch.org/whl/cu130"
-TORCH_VERSION = "2.11.0"
-TORCHVISION_VERSION = "0.26.0"
+TORCH_VERSION = "2.14.1"
+TORCHVISION_VERSION = "0.29.1"
 ROCM_TORCH_VERSION = f"{TORCH_VERSION}+rocm7.2"
 CUDA_TORCH_VERSION = f"{TORCH_VERSION}+cu130"
 
@@ -115,7 +114,7 @@ def check_torch(python_executable: str | Path | None = None):
 
 
 def rewrite_extra_index_url(text: str, url: str) -> str:
-    """Replace the `extra-index-url` value inside the [tool.uv] table.
+    """Replace the named PyTorch index, or the legacy extra-index-url key.
 
     Raises RuntimeError when the table or the key is missing, so an unexpected
     pyproject layout fails loudly instead of being silently mis-edited.
@@ -136,13 +135,32 @@ def rewrite_extra_index_url(text: str, url: str) -> str:
             out.append(f'{indent}extra-index-url = ["{url}"]')
             continue
         out.append(line)
+    rewritten = newline.join(out) + newline
+
+    def replace_named_index(match):
+        nonlocal seen_key
+        block = match.group(0)
+        if not re.search(r"""(?m)^[ \t]*name\s*=\s*["']pytorch["']\s*$""", block):
+            return block
+        block, count = re.subn(
+            r"(?m)^([ \t]*)url\s*=[^\r\n]*",
+            lambda item: f'{item.group(1)}url = "{url}"',
+            block,
+        )
+        seen_key |= bool(count)
+        return block
+
+    rewritten = re.sub(
+        r"(?ms)^\[\[tool\.uv\.index\]\][^\r\n]*\r?\n.*?(?=^\[|\Z)",
+        replace_named_index,
+        rewritten,
+    )
     if not seen_key:
         raise RuntimeError(
-            "No `extra-index-url` key found under [tool.uv] in pyproject.toml.\n"
-            "Add one first, for example:\n\n"
-            f'[tool.uv]\nextra-index-url = ["{url}"]'
+            "No named `pytorch` index or legacy `extra-index-url` key found in pyproject.toml.\n"
+            "Restore the named PyTorch index and [tool.uv.sources] from the repository configuration."
         )
-    return newline.join(out) + newline
+    return rewritten
 
 
 def linux_torch_requirement(restore_cuda: bool) -> str:
@@ -159,7 +177,7 @@ def linux_torch_requirement(restore_cuda: bool) -> str:
 def linux_torchvision_requirement(restore_cuda: bool) -> str:
     """Select the matching native operators, including their backend build.
 
-    torchvision's public ``torch==2.11.0`` requirement accepts both CUDA and
+    torchvision's public torch requirement accepts both CUDA and
     ROCm local versions. uv can retain a locked PyPI torchvision wheel while
     replacing torch, so the two backend builds must be selected together.
     """
@@ -175,7 +193,7 @@ def run_cmd(cmd, **kwargs):
 def verification_code(restore_cuda: bool = False) -> str:
     """Return checks that distinguish a working ROCm build from CUDA."""
     # Print metadata before importing native libraries: a mismatched torchvision
-    # can fail at import before any of the backend assertions run. v0.26 also
+    # can fail at import before any of the backend assertions run. torchvision
     # supports this flag to reveal the OSError otherwise hidden by its loader.
     preamble = textwrap.dedent("""\
         import importlib.metadata
@@ -240,26 +258,32 @@ def require_uv():
 def install_linux(dry_run: bool, restore_cuda: bool) -> None:
     require_uv()
     target = CUDA_INDEX if restore_cuda else ROCM_INDEX
-    label = "Torch 2.11 + CUDA 13.0" if restore_cuda else "Torch 2.11 + ROCm 7.2"
+    label = "Torch 2.14 + CUDA 13.0" if restore_cuda else "Torch 2.14 + ROCm 7.2"
 
     original = PYPROJECT.read_text(encoding="utf-8")
     rewritten = rewrite_extra_index_url(original, target)
 
-    print(f"pyproject.toml [tool.uv] change (target: {label}):")
+    print(f"pyproject.toml PyTorch index change (target: {label}):")
     for old, new in zip(original.splitlines(), rewritten.splitlines()):
         if old != new:
             print(f"  - {old}")
             print(f"  + {new}")
 
     verify = verification_code(restore_cuda)
+    print(
+        f"Target packages: {linux_torch_requirement(restore_cuda)}, "
+        f"{linux_torchvision_requirement(restore_cuda)}"
+    )
+    # The explicit PyTorch source selects the backend. Public version upgrade
+    # constraints also allow the universal lock to retain PyPI wheels on macOS.
     steps = [
         [
             "uv",
             "lock",
             "--upgrade-package",
-            linux_torch_requirement(restore_cuda),
+            f"torch=={TORCH_VERSION}",
             "--upgrade-package",
-            linux_torchvision_requirement(restore_cuda),
+            f"torchvision=={TORCHVISION_VERSION}",
         ],
         ["uv", "sync"],
     ]

@@ -257,3 +257,38 @@ def test_incomplete_flash_installation_falls_back_before_switching(monkeypatch, 
     configure_embedding_attention(native, prefer_flash=True)
     assert native.config._attn_implementation == COMPACT_SDPA
     assert "einops" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "supported,windows_bnb,expected",
+    [(True, False, "flash_attention_2"), (False, False, COMPACT_SDPA), (True, True, COMPACT_SDPA)],
+)
+def test_rocm_embedding_backbone_selects_flash_by_capability(
+    monkeypatch, supported, windows_bnb, expected
+):
+    import bananabread.models.inference as inference
+
+    monkeypatch.setattr(torch.version, "hip", "7.2.53214")
+    monkeypatch.setattr(inference, "is_flash_attn_2_available", lambda: True)
+    monkeypatch.setattr(inference.importlib, "import_module", lambda name: object())
+    monkeypatch.setattr(inference, "flash_attention_supported_device", lambda device: supported)
+    if windows_bnb:
+        monkeypatch.setattr(inference.sys, "platform", "win32")
+    native = LlamaModel(
+        LlamaConfig(
+            vocab_size=32,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            attn_implementation="sdpa",
+        )
+    ).half()
+    native.is_loaded_in_4bit = windows_bnb
+
+    def select_backend(choices):
+        native.config._attn_implementation = choices[""]
+
+    monkeypatch.setattr(native, "set_attn_implementation", select_backend)
+    configure_embedding_attention(native, prefer_flash=True)
+    assert native.config._attn_implementation == expected

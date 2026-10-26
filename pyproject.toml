@@ -34,8 +34,8 @@ dependencies = [
     "pydantic>=2.10.0,<3.0.0",
     # Machine learning and AI
     # Keep AMD's native-Windows 2.9.1 wheel valid while the shared lockfile
-    # selects Torch 2.11 for CUDA, ROCm, macOS, and CPU environments.
-    "torch>=2.9.0,<2.12.0",
+    # selects Torch 2.14 for CUDA, ROCm, macOS, and CPU environments.
+    "torch>=2.9.0,<2.15.0",
     # Nemotron-3.5 image inputs need the FlashAttention fixes in 5.20.0.
     "transformers==5.20.0",
     # 0.32+ integrates hf-xet into the standard Hub download APIs.
@@ -102,5 +102,24 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 
 [tool.uv]
-extra-index-url = ["https://download.pytorch.org/whl/cu130"]
 index-strategy = "unsafe-best-match"
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch", marker = "sys_platform != 'darwin'" },
+    { index = "pypi-macos", marker = "sys_platform == 'darwin'" },
+]
+torchvision = [
+    { index = "pytorch", marker = "sys_platform != 'darwin'" },
+    { index = "pypi-macos", marker = "sys_platform == 'darwin'" },
+]
+
+# Also expose this index to transitive ROCm runtime dependencies (triton-rocm).
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu130"
+
+[[tool.uv.index]]
+name = "pypi-macos"
+url = "https://pypi.org/simple"
+explicit = true

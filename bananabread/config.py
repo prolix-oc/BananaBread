@@ -213,6 +213,7 @@ DEFAULTS = {
     "enable_warmup": True,
     "cuda_cache_ttl_enabled": False,
     "log_embeddings": False,
+    "disable_api_key_auth": False,
     "seed_management_key": None,
     "seed_user_key": None,
 }
@@ -368,6 +369,9 @@ def _require_requested_accelerators(parsed_args) -> None:
 
 def validate_args(parsed_args):
     """Validate config-derived values because argparse choices do not validate defaults."""
+    if type(getattr(parsed_args, "disable_api_key_auth", False)) is not bool:
+        raise ValueError("disable_api_key_auth must be a boolean")
+
     if is_rocm_build():
         device_name = (
             torch.cuda.get_device_name(0) if torch.cuda.is_available() else "unavailable"
@@ -661,6 +665,10 @@ def parse_args():
     # Determinism
     parser.add_argument("--seed", type=int, default=DEFAULTS["seed"],
                         help="Random seed for reproducibility. Set to -1 for random seed. (default: 42)")
+
+    # Authentication
+    parser.add_argument("--disable-api-key-auth", action='store_true', default=DEFAULTS["disable_api_key_auth"],
+                        help="Allow API requests without a key using a shared anonymous user; management authentication is still required")
 
     # Seeding
     parser.add_argument("--seed-management-key", type=str, default=DEFAULTS.get("seed_management_key"),

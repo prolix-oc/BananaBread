@@ -58,6 +58,7 @@
 
     "seed": 65,
 
+    "disable_api_key_auth": false,
     "seed_management_key": null,
     "seed_user_key": null
 }

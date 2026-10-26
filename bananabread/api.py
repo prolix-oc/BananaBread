@@ -134,6 +134,7 @@ cuda_cache_manager = CUDACacheManager(
 # ----- API Key Authentication -----
 
 API_KEYS_FILE = "./api_keys.json"
+ANONYMOUS_USER = "anonymous"
 api_keys = {}
 tenant_store = TenantStore(API_KEYS_FILE)
 
@@ -148,6 +149,13 @@ def load_api_keys():
         if getattr(args, "seed_user_key", None) and "user" in tenant_store.data.get("users", {}):
             tenant_store.set_user_api_key("user", args.seed_user_key)
             logger.info("🔑 Seeded user API key from config")
+    if args.disable_api_key_auth:
+        if ANONYMOUS_USER not in tenant_store.data["users"]:
+            tenant_store.create_user(ANONYMOUS_USER)
+        logger.warning(
+            "API key authentication disabled; API requests share the anonymous user. "
+            "Management authentication is still required."
+        )
     apply_cache_config()
     api_keys = {
         username: record["api_key"]
@@ -181,12 +189,16 @@ def apply_cache_config():
 
 load_api_keys()
 
-def get_api_key(authorization: str = Header(None)):
+def get_api_key(authorization: str = Header(None)) -> str | None:
+    if args.disable_api_key_auth:
+        return None
     if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return authorization.split("Bearer ")[-1]
 
-def get_api_user(api_key: str = Depends(get_api_key)):
+def get_api_user(api_key: str | None = Depends(get_api_key)):
+    if args.disable_api_key_auth:
+        return {"api_key": None, "username": ANONYMOUS_USER}
     username = tenant_store.authenticate_user(api_key)
     return {"api_key": api_key, "username": username}
 

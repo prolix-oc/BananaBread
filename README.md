@@ -93,6 +93,16 @@ If you want predictable keys on first startup without manually editing `api_keys
 
 These are only applied when `api_keys.json` does not exist. Once the file is created, changing these values in `config.json` has no effect.
 
+To allow API requests without a key, add this setting to `config.json` and restart the server:
+
+```json
+{
+    "disable_api_key_auth": true
+}
+```
+
+You can also launch with `uv run bananabread-emb --disable-api-key-auth`. Authentication is enabled by default. With this setting enabled, API requests ignore the Authorization header and use a shared `anonymous` user, created automatically in `api_keys.json` if needed. Token usage, token limits, and per-user cache settings apply to that shared user. Endpoints that require the management key still require authentication.
+
 ### 3. Test it
 
 Once the server is running, open **http://localhost:8008/docs** in your browser to see the interactive API docs, or send a quick test request:
@@ -412,6 +422,8 @@ All available options (grouped by purpose):
 | `log_embeddings` | `false` | Log embedding queries and results to `embeddings.log` |
 | **Miscellaneous** | | |
 | `seed` | `65` | Random seed for reproducibility (`-1` for random) |
+| **Authentication** | | |
+| `disable_api_key_auth` | `false` | Allow API requests without a key using a shared `anonymous` user; management authentication is still required |
 | **Seeding (first startup only)** | | |
 | `seed_management_key` | `null` | Auto-configure the management key when `api_keys.json` does not exist |
 | `seed_user_key` | `null` | Override the auto-generated user API key when `api_keys.json` does not exist |
@@ -604,27 +616,27 @@ BananaBread exposes multiple API formats so it can slot into different tools wit
 
 ### Authentication
 
-Endpoints under `/v1/` require a Bearer token (from `api_keys.json`):
+API endpoints require a Bearer token (from `api_keys.json`) by default, including Ollama and llama.cpp-compatible endpoints:
 ```
 Authorization: Bearer <your-api-key>
 ```
 
-Ollama and llama.cpp-compatible endpoints do **not** require authentication.
+Set `"disable_api_key_auth": true` in `config.json` (or use `--disable-api-key-auth`) and restart to allow requests without a key on endpoints marked **User key** below. All such requests use the shared `anonymous` user. Endpoints marked **Management key** still require a management key or a management login cookie.
 
 ### Endpoint reference
 
 | Endpoint | Auth | Format | Description |
 |---|---|---|---|
-| `POST /v1/embeddings` | Yes | OpenAI | Generate embeddings (single or batch) |
-| `POST /v1/rerank` | Yes | Custom | Rerank documents against a query |
-| `POST /v1/classify` | Yes | Custom | Classify text by emotion |
-| `POST /v1/models/download` | Yes | Custom | Resolve, inspect, and optionally download a Hugging Face model snapshot |
-| `POST /v1/models` | Yes | OpenAI | List loaded models |
-| `POST /v1/health` | Yes | Custom | Health check |
-| `POST /v1/memory` | Yes | Custom | Memory and thread usage stats |
-| `POST /api/embeddings` | No | Ollama | Ollama-compatible embedding |
-| `POST /api/embed` | No | Ollama | Ollama-compatible embedding (alt) |
-| `POST /embedding` | No | llama.cpp | llama.cpp-compatible embedding |
+| `POST /v1/embeddings` | User key | OpenAI | Generate embeddings (single or batch) |
+| `POST /v1/rerank` | User key | Custom | Rerank documents against a query |
+| `POST /v1/classify` | Management key | Custom | Classify text by emotion |
+| `POST /v1/models/download` | Management key | Custom | Resolve, inspect, and optionally download a Hugging Face model snapshot |
+| `GET /v1/models` | User key | OpenAI | List loaded models |
+| `GET /v1/health` | User key | Custom | Health check |
+| `GET /v1/memory` | Management key | Custom | Memory and thread usage stats |
+| `POST /api/embeddings` | User key | Ollama | Ollama-compatible embedding |
+| `POST /api/embed` | User key | Ollama | Ollama-compatible embedding (alt) |
+| `POST /embedding` | User key | llama.cpp | llama.cpp-compatible embedding |
 | `GET /` | No | — | Server info and status |
 
 Full interactive docs are available at **http://localhost:8008/docs** (Swagger) and **http://localhost:8008/redoc** (ReDoc) while the server is running.
@@ -677,9 +689,10 @@ curl -X POST http://localhost:8008/v1/rerank \
   }'
 ```
 
-#### Embeddings (llama.cpp format, no auth)
+#### Embeddings (llama.cpp format)
 ```bash
 curl -X POST http://localhost:8008/embedding \
+  -H "Authorization: Bearer <your-api-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "content": "Hello world!",
@@ -750,7 +763,7 @@ BananaBread is designed to impersonate other servers. It responds to model listi
 
 - **SillyTavern**: Point it at `http://localhost:8008` as a llama.cpp backend. BananaBread responds to the models endpoint, so SillyTavern will treat it as a full llama.cpp instance.
 - **OpenAI-compatible clients**: Use the `/v1/embeddings` endpoint with your API key.
-- **Ollama-compatible clients**: Use `/api/embeddings` or `/api/embed` — no authentication needed.
+- **Ollama-compatible clients**: Use `/api/embeddings` or `/api/embed` with your API key, or enable `disable_api_key_auth` for clients that cannot send one.
 
 ---
 

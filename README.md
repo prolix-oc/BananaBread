@@ -458,7 +458,7 @@ PyTorch's ROCm builds expose AMD GPUs through the same `cuda` device API, so eve
 Run the installer — it rewrites the PyTorch index in `pyproject.toml` to the ROCm index, re-locks, syncs, and verifies the result:
 
 ```bash
-uv sync --no-install-package torch                    # avoid downloading CUDA first
+uv sync --no-install-package torch --no-install-package torchvision # avoid downloading CUDA first
 uv run --no-sync python install_rocm_torch.py --dry-run
 uv run --no-sync python install_rocm_torch.py
 ```
@@ -469,7 +469,7 @@ must show a non-empty HIP version, the AMD GPU name, and the `.venv` Python path
 
 Because the lockfile itself now contains the ROCm build, plain `uv run bananabread-emb --embedding-device cuda` works afterwards — no extra flags. To switch back to NVIDIA CUDA later: `uv run python install_rocm_torch.py --restore-cuda`.
 
-Why the index matters: the installer asks uv for the exact `2.11.0+rocm7.2` build so a missing or incompatible ROCm wheel produces a resolution error instead of silently falling back to a CUDA build. The official ROCm wheels are Linux x86_64. AMD supports the RX 7900 XTX (`gfx1100`), RX 9070 series (`gfx1201`), and RX 9060 series (`gfx1200`) on Ubuntu 24.04.3, Ubuntu 22.04.5, RHEL 10.1, and RHEL 9.7; see the [ROCm 7.2 system requirements](https://rocm.docs.amd.com/projects/install-on-linux/en/docs-7.2.0/reference/system-requirements.html#supported-gpus).
+Why the index matters: the installer asks uv for the exact `torch==2.11.0+rocm7.2` and `torchvision==0.26.0+rocm7.2` builds so missing or incompatible ROCm wheels produce a resolution error instead of silently falling back to another backend. Both packages must be switched together: torchvision's `torch==2.11.0` dependency also accepts ROCm torch, even when torchvision itself came from PyPI or a CUDA index. The official ROCm wheels are Linux x86_64. AMD supports the RX 7900 XTX (`gfx1100`), RX 9070 series (`gfx1201`), and RX 9060 series (`gfx1200`) on Ubuntu 24.04.3, Ubuntu 22.04.5, RHEL 10.1, and RHEL 9.7; see the [ROCm 7.2 system requirements](https://rocm.docs.amd.com/projects/install-on-linux/en/docs-7.2.0/reference/system-requirements.html#supported-gpus).
 
 The ROCm 7.2 index also carries newer Torch releases, but still carries 2.11.0.
 Commands that sort the index and use `tail` only display its newest releases;
@@ -751,6 +751,24 @@ BananaBread is designed to impersonate other servers. It responds to model listi
 ---
 
 ## Troubleshooting
+
+### `operator torchvision::nms does not exist` during ROCm verification
+
+This means torchvision's native operators were unavailable when it imported.
+One cause is a PyPI or CUDA torchvision wheel paired with ROCm torch. Check
+package metadata without importing torchvision (which would trigger the error):
+
+```bash
+uv run --no-sync python -c "import importlib.metadata as m; print('torch', m.version('torch')); print('torchvision', m.version('torchvision'))"
+```
+
+On Linux, the installer selects `torch 2.11.0+rocm7.2` together with
+`torchvision 0.26.0+rocm7.2`. Update your checkout and rerun
+`uv run --no-sync python install_rocm_torch.py` to repair a mismatched pair.
+Verification prints both installed versions before importing torchvision and
+enables its native-extension loading warnings. If the versions already match,
+the warning before the traceback can identify a missing shared library or
+another loader error; include that warning when reporting the failure.
 
 ### `Can't initialize NVML` on an AMD GPU
 

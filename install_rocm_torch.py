@@ -14,7 +14,7 @@ Windows:
     `uv run --no-sync` (a plain `uv run` would restore the CUDA wheel).
 
 Usage:
-    uv sync --no-install-package torch
+    uv sync --no-install-package torch --no-install-package torchvision
     uv run --no-sync python install_rocm_torch.py                # install ROCm torch
     uv run --no-sync python install_rocm_torch.py --dry-run      # preview
     uv run --no-sync python install_rocm_torch.py --restore-cuda # restore CUDA (Linux)
@@ -35,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -45,6 +46,7 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 ROCM_INDEX = "https://download.pytorch.org/whl/rocm7.2"
 CUDA_INDEX = "https://download.pytorch.org/whl/cu130"
 TORCH_VERSION = "2.11.0"
+TORCHVISION_VERSION = "0.26.0"
 ROCM_TORCH_VERSION = f"{TORCH_VERSION}+rocm7.2"
 CUDA_TORCH_VERSION = f"{TORCH_VERSION}+cu130"
 
@@ -154,6 +156,17 @@ def linux_torch_requirement(restore_cuda: bool) -> str:
     return f"torch=={version}"
 
 
+def linux_torchvision_requirement(restore_cuda: bool) -> str:
+    """Select the matching native operators, including their backend build.
+
+    torchvision's public ``torch==2.11.0`` requirement accepts both CUDA and
+    ROCm local versions. uv can retain a locked PyPI torchvision wheel while
+    replacing torch, so the two backend builds must be selected together.
+    """
+    backend = "cu130" if restore_cuda else "rocm7.2"
+    return f"torchvision=={TORCHVISION_VERSION}+{backend}"
+
+
 def run_cmd(cmd, **kwargs):
     print(f"$ {' '.join(cmd)}")
     return subprocess.run(cmd, cwd=str(REPO_ROOT), **kwargs)
@@ -161,22 +174,44 @@ def run_cmd(cmd, **kwargs):
 
 def verification_code(restore_cuda: bool = False) -> str:
     """Return checks that distinguish a working ROCm build from CUDA."""
+    # Print metadata before importing native libraries: a mismatched torchvision
+    # can fail at import before any of the backend assertions run. v0.26 also
+    # supports this flag to reveal the OSError otherwise hidden by its loader.
+    preamble = textwrap.dedent("""\
+        import importlib.metadata
+        import os
+        import sys
+
+        os.environ['TORCHVISION_WARN_WHEN_EXTENSION_LOADING_FAILS'] = '1'
+        print('python', sys.executable, flush=True)
+        for package in ('torch', 'torchvision'):
+            print(package, importlib.metadata.version(package), flush=True)
+        import torch
+        v = torch.__version__
+        vision_version = importlib.metadata.version('torchvision')
+        print('HIP', torch.version.hip, '| CUDA', torch.version.cuda, flush=True)
+        """)
     if restore_cuda:
-        return (
-            "import sys, torch, torchvision; v = torch.__version__; "
-            "assert '+cu130' in v, v; "
-            "assert torch.version.cuda, 'CUDA runtime missing'; "
-            "print('python', sys.executable, '| torch', v, '| CUDA', torch.version.cuda)"
-        )
-    return (
-        "import sys, torch, torchvision; v = torch.__version__; "
-        "assert '+rocm' in v, v; "
-        "assert torch.version.hip, 'ROCm/HIP runtime missing'; "
-        "assert torch.cuda.is_available(), 'AMD GPU not visible'; "
-        "assert '+rocm' in torchvision.__version__, 'torchvision is not the ROCm build'; "
-        "print('python', sys.executable, '| torch', v, '| HIP', torch.version.hip, "
-        "'| GPU', torch.cuda.get_device_name(0))"
-    )
+        checks = textwrap.dedent("""\
+            assert '+cu130' in v, v
+            assert torch.version.cuda, 'CUDA runtime missing'
+            assert '+cu130' in vision_version, f'torchvision {vision_version} is not the CUDA 13.0 build'
+            """)
+    else:
+        checks = textwrap.dedent("""\
+            assert '+rocm' in v, v
+            assert torch.version.hip, 'ROCm/HIP runtime missing'
+            assert '+rocm' in vision_version, f'torchvision {vision_version} is not the ROCm build'
+            """)
+    vision_check = textwrap.dedent("""\
+        import torchvision
+        assert torchvision.extension._has_ops(), 'torchvision native operators failed to load'
+        """)
+    gpu_check = "" if restore_cuda else textwrap.dedent("""\
+        assert torch.cuda.is_available(), 'AMD GPU not visible'
+        print('GPU', torch.cuda.get_device_name(0), flush=True)
+        """)
+    return preamble + checks + vision_check + gpu_check
 
 
 def verify_subprocess(assertion: str, python_executable: str | Path | None = None) -> int:
@@ -218,7 +253,14 @@ def install_linux(dry_run: bool, restore_cuda: bool) -> None:
 
     verify = verification_code(restore_cuda)
     steps = [
-        ["uv", "lock", "--upgrade-package", linux_torch_requirement(restore_cuda)],
+        [
+            "uv",
+            "lock",
+            "--upgrade-package",
+            linux_torch_requirement(restore_cuda),
+            "--upgrade-package",
+            linux_torchvision_requirement(restore_cuda),
+        ],
         ["uv", "sync"],
     ]
 

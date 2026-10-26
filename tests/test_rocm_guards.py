@@ -213,7 +213,7 @@ def test_cuda_verification_does_not_require_hip():
     code = install_rocm_torch.verification_code(restore_cuda=True)
     assert "+cu130" in code
     assert "torch.version.cuda" in code
-    assert "torch.version.hip" not in code
+    assert "assert torch.version.hip" not in code
 
 
 def test_windows_amd_wheel_keeps_vendor_torch_version():
@@ -235,4 +235,4 @@ def test_windows_amd_repairs_matching_vision_even_with_existing_rocm(monkeypatch
 def test_rocm_verification_detects_incompatible_vision():
     code = install_rocm_torch.verification_code()
     assert "torchvision" in code
-    assert "'+rocm' in torchvision.__version__" in code
+    assert "'+rocm' in vision_version" in code

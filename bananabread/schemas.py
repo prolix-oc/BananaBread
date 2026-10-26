@@ -148,6 +148,21 @@ class OllamaEmbedResponse(BaseModel):
     load_duration: int = 0
     prompt_eval_count: int
 
+class OllamaShowRequest(BaseModel):
+    model: str = Field(min_length=1)
+    verbose: bool = False
+
+class OllamaModelDescriptor(BaseModel):
+    name: str
+    model: str
+
+class OllamaModelsResponse(BaseModel):
+    models: list[OllamaModelDescriptor]
+
+class OllamaShowResponse(BaseModel):
+    model_info: dict[str, Any]
+    capabilities: list[str]
+
 # ----- Llama.cpp Compatible Schemas -----
 
 class LlamaCppEmbeddingRequest(BaseModel):

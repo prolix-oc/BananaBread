@@ -285,6 +285,111 @@ def test_ollama_legacy_embedding_response_is_preserved(client):
     assert charged == [1]
 
 
+def test_open_connections_model_discovery_and_ten_input_batch(client, monkeypatch):
+    transport, model, charged = client
+    import bananabread.api as api
+
+    name = "nvidia/Nemotron-3.5-Embed-1B-BF16"
+    monkeypatch.setattr(api.models_manager, "embedding_model_name", name)
+    monkeypatch.setattr(model, "get_embedding_dimension", lambda: 2, raising=False)
+    monkeypatch.setattr(model, "max_seq_length", 32768, raising=False)
+    monkeypatch.setattr(api.args, "embedding_batch_size", 3)
+    monkeypatch.setattr(api.args, "embedding_batch_max_tokens", 12)
+
+    # Open Connections filters /api/tags by these keywords, then reads
+    # /api/show's *_length fields to choose its context and vector dimensions.
+    tags = transport.get("/api/tags")
+    assert tags.status_code == 200
+    discovered = [
+        item for item in tags.json()["models"]
+        if any(word in item["name"].lower() for word in ("embed", "embedding", "bge"))
+    ]
+    assert [item["name"] for item in discovered] == [name]
+    show = transport.post("/api/show", json={"model": name})
+    assert show.status_code == 200, show.text
+    info = show.json()["model_info"]
+    assert next(value for key, value in info.items() if "context_length" in key) == 32768
+    dims = next(value for key, value in info.items() if "embedding_length" in key)
+    assert dims == 2  # Actual dimensions, rather than args.embedding_dim=1024.
+    assert show.json()["capabilities"] == ["embedding"]
+    assert model.calls == []
+    assert charged == []
+
+    texts = [f"note {index}" for index in range(10)]
+    vectors = {text: [float(index + 1), 1.0] for index, text in enumerate(texts)}
+
+    def encode(inputs, **kwargs):
+        model.calls.append((inputs, kwargs))
+        return np.array([vectors[text] for text in inputs])
+
+    monkeypatch.setattr(model, "encode", encode)
+    response = transport.post("/api/embed", json={"model": name, "input": texts})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["embeddings"] == [vectors[text] for text in texts]
+    assert all(len(vector) == dims for vector in data["embeddings"])
+    assert data["prompt_eval_count"] == 20
+    assert [len(inputs) for inputs, kwargs in model.calls] == [3, 3, 3, 1]
+    assert charged == [20]
+
+
+def test_ollama_show_accepts_latest_alias_and_rejects_unknown_models(client):
+    transport, model, charged = client
+    assert transport.post("/api/show", json={"model": "test/multimodal:latest", "verbose": True}).status_code == 200
+    assert transport.post("/api/show", json={"model": "other/model"}).status_code == 404
+    assert transport.post("/api/show", json={"model": ""}).status_code == 422
+    assert model.calls == []
+    assert charged == []
+
+
+def test_ollama_discovery_handles_unloaded_models(client, monkeypatch):
+    transport, model, charged = client
+    import bananabread.api as api
+
+    monkeypatch.setattr(api.models_manager, "embedding_model", None)
+    assert transport.get("/api/tags").json() == {"models": []}
+    assert transport.post("/api/show", json={"model": "test/multimodal"}).status_code == 503
+    assert transport.post("/api/embed", json={"model": "test/multimodal", "input": "hello"}).status_code == 503
+    assert charged == []
+
+
+def test_ollama_discovery_uses_pool_metadata_without_selecting_an_instance(client, monkeypatch):
+    transport, model, charged = client
+    import bananabread.api as api
+
+    class Pool:
+        def get_all_models(self):
+            return [model]
+
+        def get_model(self):
+            pytest.fail("Discovery must not advance the inference pool")
+
+    monkeypatch.setattr(api.models_manager, "embedding_model", None)
+    monkeypatch.setattr(api.models_manager, "embedding_model_pool", Pool())
+    assert transport.get("/api/tags").json()["models"][0]["name"] == "test/multimodal"
+    assert transport.post("/api/show", json={"model": "test/multimodal"}).status_code == 200
+    assert model.calls == []
+    assert charged == []
+
+
+@pytest.mark.parametrize("vectors,message", [
+    (np.empty((1, 0)), "nonempty vectors"),
+    (np.ones((2, 2)), "expected 1"),
+    (np.zeros((1, 2)), "all-zero"),
+    (np.array([[float("nan"), 1.0]]), "non-finite"),
+    (np.array([[float("inf"), 1.0]]), "non-finite"),
+])
+@pytest.mark.parametrize("route", ["/api/embed", "/api/embeddings"])
+def test_ollama_invalid_vectors_produce_an_explicit_http_error(client, monkeypatch, vectors, message, route):
+    transport, model, charged = client
+    import bananabread.api as api
+
+    monkeypatch.setattr(api, "encode_inputs", lambda *args: vectors)
+    response = transport.post(route, json={"model": "test/multimodal", "input": "hello"})
+    assert response.status_code == 500
+    assert message in response.json()["detail"]
+
+
 def test_ollama_and_uncached_openai_use_the_same_document_inference(client, monkeypatch):
     transport, model, charged = client
     import bananabread.api as api

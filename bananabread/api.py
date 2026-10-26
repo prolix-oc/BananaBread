@@ -20,6 +20,7 @@ from bananabread.config import (
 from bananabread.schemas import (
     RerankRequest, EmbeddingRequest, ClassificationRequest,
     OllamaEmbeddingRequest, OllamaEmbeddingResponse, OllamaEmbedResponse,
+    OllamaShowRequest, OllamaModelsResponse, OllamaShowResponse,
     LlamaCppEmbeddingRequest, LlamaCppEmbeddingResponse,
     HFModelDownloadRequest, HFModelDownloadResponse,
     CreateUserRequest, CreateUserResponse, ManagementConfigUpdate,
@@ -38,6 +39,7 @@ from bananabread.utils import (
 from bananabread.hf_models import download_hf_model, inspect_hf_model, resolve_model_repo_id
 from bananabread.tenancy import TenantStore, count_text_tokens
 from bananabread.middleware import OptionsMiddleware
+from bananabread.ollama import embedding_model_info, checked_embedding_vectors
 from bananabread.admin_panel import ADMIN_PANEL_HTML, LOGIN_HTML
 from bananabread.auth import (
     create_jwt, verify_jwt, set_auth_cookie, clear_auth_cookie
@@ -703,7 +705,7 @@ async def encode_ollama_embeddings(inputs: str | list[str] | None, auth: dict):
             model = models_manager.embedding_model_pool.get_model()
         else:
             model = models_manager.embedding_model
-        return encode_inputs(model, inputs, "document")
+        return checked_embedding_vectors(encode_inputs(model, inputs, "document"), len(inputs))
 
     try:
         docs_embeddings = await run_in_threadpool_with_executor(
@@ -711,11 +713,11 @@ async def encode_ollama_embeddings(inputs: str | list[str] | None, auth: dict):
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        logger.error("Ollama embedding inference failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if isinstance(docs_embeddings, torch.Tensor):
-        docs_embeddings = docs_embeddings.detach().float().cpu()
-    embeddings = docs_embeddings.tolist()
-    return embeddings, prompt_tokens
+    return docs_embeddings.tolist(), prompt_tokens
 
 
 @app.post("/api/embeddings", response_model=OllamaEmbeddingResponse)
@@ -867,6 +869,25 @@ async def memory_usage(api_key: str = Depends(get_management_key)):
 async def health(api_key: str = Depends(get_api_user)):
     return {"status": "healthy", "cpu_cores": CPU_COUNT, "optimized": True}
 
+@app.get("/api/tags", response_model=OllamaModelsResponse)
+async def ollama_models_endpoint(auth: dict = Depends(get_api_user)):
+    if get_embedding_model_for_token_count() is None:
+        return {"models": []}
+    name = models_manager.embedding_model_name
+    return {"models": [{"name": name, "model": name}]}
+
+
+@app.post("/api/show", response_model=OllamaShowResponse)
+async def ollama_show_endpoint(request: OllamaShowRequest, auth: dict = Depends(get_api_user)):
+    model = get_embedding_model_for_token_count()
+    if model is None:
+        raise HTTPException(status_code=503, detail="Embedding model is not loaded")
+    name = models_manager.embedding_model_name
+    if request.model.removesuffix(":latest") != name.removesuffix(":latest"):
+        raise HTTPException(status_code=404, detail=f"Model '{request.model}' is not loaded")
+    return {"model_info": embedding_model_info(model), "capabilities": ["embedding"]}
+
+
 @app.get("/v1/models")
 async def model(api_key: str = Depends(get_api_user)):
     current_model = get_embedding_model_for_token_count()
@@ -889,6 +910,9 @@ async def read_root():
         "embeddings": "/v1/embeddings",
         "lmstudio_embeddings": "/api/v0/embeddings",
         "lmstudio_embeddings_alias": "/v0/embeddings",
+        "ollama_embeddings": "/api/embed",
+        "ollama_models": "/api/tags",
+        "ollama_model_info": "/api/show",
         "classify": "/v1/classify",
         "management_panel": "/management",
         "management_config": "/v1/management/config",

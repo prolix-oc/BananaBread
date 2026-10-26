@@ -93,6 +93,8 @@ def api_client(monkeypatch, tmp_path):
 USER_ROUTES = [
     ("GET", "/v1/health", None),
     ("GET", "/v1/models", None),
+    ("GET", "/api/tags", None),
+    ("POST", "/api/show", {"model": "test/auth"}),
     ("POST", "/v1/embeddings", {"input": "hello"}),
     ("POST", "/v0/embeddings", {"model": "test/auth", "input": "hello"}),
     ("POST", "/api/v0/embeddings", {"model": "test/auth", "input": "hello"}),

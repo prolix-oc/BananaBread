@@ -638,6 +638,8 @@ Set `"disable_api_key_auth": true` in `config.json` (or use `--disable-api-key-a
 | `GET /v1/memory` | Management key | Custom | Memory and thread usage stats |
 | `POST /api/embeddings` | User key | Ollama | Legacy `prompt` request; returns a single `embedding` vector |
 | `POST /api/embed` | User key | Ollama | `input` string or batch; returns an `embeddings` array in input order |
+| `GET /api/tags` | User key | Ollama | Discover the loaded embedding model |
+| `POST /api/show` | User key | Ollama | Read the loaded model's effective vector dimensions and context limit |
 | `POST /embedding` | User key | llama.cpp | llama.cpp-compatible embedding |
 | `GET /` | No | — | Server info and status |
 
@@ -783,6 +785,16 @@ BananaBread is designed to impersonate other servers. It responds to model listi
 - **OpenAI-compatible clients**: Use the `/v1/embeddings` endpoint with your API key.
 - **LM Studio-compatible clients**: Use `/api/v0/embeddings` or `/v0/embeddings` with the same request body as `/v1/embeddings`.
 - **Ollama-compatible clients**: Use `/api/embed` with `{"model":"your-model","input":["First text","Second text"]}`. The response includes `embeddings`, with one vector per input, plus `model`, `total_duration`, `load_duration`, and `prompt_eval_count`. Durations are nanoseconds; `load_duration` is zero because models load at startup. Legacy clients can use `/api/embeddings` with `prompt` to receive a single `embedding` vector. Send your API key, or enable `disable_api_key_auth` for clients that cannot send one.
+
+### Open Connections for Obsidian
+
+Select **Ollama** as the embedding provider and set its host to `http://127.0.0.1:8008` (use the server's address if it runs on another machine). Enter the host without `/api` or an endpoint suffix. Open Connections adds `/api/embed`, `/api/tags`, and `/api/show` itself.
+
+Its Ollama adapter sends no Authorization header. Set `"disable_api_key_auth": true` in BananaBread's loaded config and restart the server, then refresh the extension's model list and select the loaded embedding model. Discovery endpoints follow the same authentication setting as embeddings.
+
+`/api/show` reports the runtime's output dimensions after truncation and its configured text context limit, where available. These values come from the loaded model, including pooled models, without running inference. Unknown metadata is omitted. `/api/tags` lists the loaded model; `/api/show` also accepts its name with `:latest` appended.
+
+If Open Connections reports **“Embedding adapter returned no usable vectors”**, click Retry after updating and restarting BananaBread. The server rejects empty, missing, non-finite, or all-zero output vectors with an explicit HTTP 500 instead of returning a successful unusable batch. If no `/api/embed` request reaches the server, the extension may have discarded every input during preprocessing; server response changes cannot repair that path.
 
 ---
 

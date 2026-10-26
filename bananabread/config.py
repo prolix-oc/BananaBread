@@ -175,6 +175,7 @@ DEFAULTS = {
     "nemotron_size": "1B",
     "embeddinggemma_backend": "torch",
     "embeddinggemma_compute_dtype": "auto",
+    "embeddinggemma_modalities": "all",
     "jina_backend": "torch",
     "jina_compute_dtype": "auto",
     "jina_modalities": "all",
@@ -232,6 +233,7 @@ CONFIG_CHOICES = {
     "nemotron_size": {"1B", "8B"},
     "embeddinggemma_backend": {"torch", "torch-bnb-4bit", "torch-metal-8bit", "torch-metal-4bit"},
     "embeddinggemma_compute_dtype": {"auto", "bfloat16", "float32"},
+    "embeddinggemma_modalities": {"all", "text", "text-image", "text-audio"},
     "jina_backend": {"torch", "torch-bnb-4bit", "torch-metal-4bit", "torch-metal-8bit"},
     "jina_compute_dtype": {"auto", "bfloat16", "float32"},
     "jina_modalities": {"all", "text", "text-image", "text-audio"},
@@ -565,7 +567,7 @@ def parse_args():
                        help=f"Number of warmup inference samples to run (default: {DEFAULTS['warmup_samples']})")
 
     # Embedding model selection arguments
-    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'nemotron-3', 'embeddinggemma', 'hf'], default=DEFAULTS["embedding_model"],
+    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'nemotron-3', 'embeddinggemma', 'hf', 'jina-v5-omni-small', 'jina-v5-omni-nano', 'nemotron-vl'], default=DEFAULTS["embedding_model"],
                        help=f"Embedding model to use (default: {DEFAULTS['embedding_model']})")
     parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default=DEFAULTS["qwen_size"],
                        help=f"Qwen model size to use when --embedding-model=qwen (default: {DEFAULTS['qwen_size']})")
@@ -585,6 +587,18 @@ def parse_args():
                        help="EmbeddingGemma 2 compute precision (auto: BF16 on supported accelerators, FP32 elsewhere; FP16 is unsafe)")
     parser.add_argument("--embeddinggemma-modalities", choices=['all', 'text', 'text-image', 'text-audio'], default=DEFAULTS["embeddinggemma_modalities"],
                        help="EmbeddingGemma encoders to load (default: all; text saves memory)")
+    parser.add_argument("--jina-backend", choices=['torch', 'torch-bnb-4bit', 'torch-metal-4bit', 'torch-metal-8bit'], default=DEFAULTS["jina_backend"],
+                       help="Jina v5 Omni runtime; install cuda-quant for NF4 or metal-quant for Metal")
+    parser.add_argument("--jina-compute-dtype", choices=['auto', 'bfloat16', 'float32'], default=DEFAULTS["jina_compute_dtype"],
+                       help="Jina v5 Omni compute precision (auto: BF16 on supported accelerators, FP32 elsewhere)")
+    parser.add_argument("--jina-modalities", choices=['all', 'text', 'text-image', 'text-audio'], default=DEFAULTS["jina_modalities"],
+                       help="Jina v5 Omni encoders to load (default: all; text saves memory)")
+    parser.add_argument("--nemotron-vl-backend", choices=['torch', 'torch-bnb-8bit', 'torch-bnb-4bit', 'torch-metal-8bit', 'torch-metal-4bit'], default=DEFAULTS["nemotron_vl_backend"],
+                       help="Nemotron VL runtime; install cuda-quant for NF4 or metal-quant for Metal")
+    parser.add_argument("--nemotron-vl-compute-dtype", choices=['bfloat16', 'float16', 'float32'], default=DEFAULTS["nemotron_vl_compute_dtype"],
+                       help="Nemotron VL compute precision")
+    parser.add_argument("--nemotron-vl-modalities", choices=['text-image', 'text'], default=DEFAULTS["nemotron_vl_modalities"],
+                       help="Nemotron VL encoders to load (default: text-image)")
     parser.add_argument("--qwen-onnx-model-path", type=str, default=DEFAULTS.get("qwen_onnx_model_path"),
                        help="Local ONNX model directory or .onnx file for --qwen-backend=onnx-int8")
     parser.add_argument("--qwen-onnx-provider", type=str, default=DEFAULTS["qwen_onnx_provider"],

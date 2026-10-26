@@ -14,6 +14,7 @@ BananaBread downloads a specialized model to your machine and runs a local serve
 | [Qwen3-Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | Embedding + Reranking | One model does both. Sizes: 0.6B, 4B, 8B. |
 | [NVIDIA Llama Nemotron Embed 1B v2](https://huggingface.co/nvidia/llama-nemotron-embed-1b-v2) | Embedding | Multilingual retrieval, 8K-token inputs, and Matryoshka dimensions (384–2048). |
 | [NVIDIA Nemotron-3 Embed](https://huggingface.co/nvidia/Nemotron-3-Embed-1B-BF16) | Embedding | Multilingual retrieval. Official BF16 checkpoints in 1B and 8B sizes, 32K-token inputs, and 2,048-dimensional Matryoshka embeddings. |
+| [NVIDIA Nemotron-3.5 Embed 1B](https://huggingface.co/nvidia/Nemotron-3.5-Embed-1B-BF16) / [8B](https://huggingface.co/nvidia/Nemotron-3.5-Embed-8B-BF16) | Embedding | Text + image documents, text queries, 32K-token inputs. Matryoshka embeddings up to 2,048 dimensions (1B) or 4,096 (8B). |
 | [Jina Embeddings v5 Omni Small](https://huggingface.co/jinaai/jina-embeddings-v5-omni-small) | Embedding | Multimodal (text, image, audio, video), 1024-dim, ~1.74B params, 32K tokens. |
 | [Jina Embeddings v5 Omni Nano](https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano) | Embedding | Multimodal (text, image, audio, video), 768-dim, ~1.04B params, 8K tokens. |
 | [NVIDIA Llama Nemotron Embed VL 1B v2](https://huggingface.co/nvidia/llama-nemotron-embed-vl-1b-v2) | Embedding | Text + image retrieval, 2048-dim, 10240-token budget with image tiles. |
@@ -205,6 +206,41 @@ uv run bananabread-emb --embedding-model nemotron-3 --nemotron-size 8B --embeddi
 
 Use the BananaBread `input_type` extension exactly as for the earlier Nemotron model: `document` (the default) uses the model's saved `passage:` prompt, and `query` uses its saved `query:` prompt. Keep the same `embedding_dim` for corpus indexing and queries. The checkpoints require Transformers 5.2+ and SentenceTransformers 5.4.1+, which BananaBread installs automatically.
 
+### Using NVIDIA Nemotron-3.5 Embed
+
+Nemotron-3.5 Embed supports text, image, and combined image/text documents with text-only retrieval queries. The official BF16 checkpoints have a 32,768-token context, including image tokens. The `1B` model produces up to 2,048 dimensions; `8B` produces up to 4,096. Both load natively without remote code.
+
+```bash
+# 1B, full-size vectors
+uv run bananabread-emb --embedding-model nemotron-3.5 --nemotron-size 1B --embedding-device cuda --embedding-dim 2048
+
+# 8B, full-size vectors
+uv run bananabread-emb --embedding-model nemotron-3.5 --nemotron-size 8B --embedding-device cuda --embedding-dim 4096
+
+# 8B with 4-bit NF4 weights and smaller returned vectors
+uv run --extra cuda-quant bananabread-emb --embedding-model nemotron-3.5 --nemotron-size 8B --embedding-device cuda --nemotron-backend torch-bnb-4bit --embedding-dim 1024
+
+# Apple Silicon with Metal 8-bit weights
+uv run --extra metal-quant bananabread-emb --embedding-model nemotron-3.5 --embedding-device mps --nemotron-backend torch-metal-8bit
+```
+
+The shared `--nemotron-backend` and `--nemotron-compute-dtype` options apply to this series. Reranking is disabled by default; add `--reranking-model mixedbread` if needed. The default size is `1B`, and the default returned dimension is `1024`. Set `embedding_model` to `"nemotron-3.5"` and `nemotron_size` to `"1B"` or `"8B"` in `config.json` for the same behavior. Hub token, revision, storage, and download-backend settings also apply.
+
+On `POST /v1/embeddings`, `input_type="document"` applies the checkpoint's saved `passage:` prompt, including for image-only inputs. `input_type="query"` applies `query:` and accepts text only. Use the [multimodal request format](#multimodal-request-bodies) to send inline images:
+
+```json
+{
+  "input": [
+    "A document containing plain text",
+    {"image": "data:image/png;base64,<encoded-image>"},
+    {"text": "A caption for this page", "image": "data:image/png;base64,<encoded-image>"}
+  ],
+  "input_type": "document"
+}
+```
+
+Each entry produces one vector. Matryoshka truncation supports any positive dimension up to the selected model's native size, with L2 normalization after truncation. Keep the model and dimensions consistent between indexing and querying. BananaBread's existing Transformers 5.19+ and SentenceTransformers 6.1+ dependencies support this native pipeline. The models use the [OpenMDW 1.1 license](https://openmdw.ai).
+
 ### Using Google EmbeddingGemma 2
 
 [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2), released October 6, 2026, is Google's 740M-parameter multimodal embedding model. BananaBread loads its text, image, and audio encoders by default and runs the native architecture without remote code. For a smaller text-only deployment, use `--embeddinggemma-modalities text` (270M parameters); `text-image` and `text-audio` omit one media encoder.
@@ -243,7 +279,7 @@ BananaBread installs Transformers 5.19+, SentenceTransformers 6.1+, and the imag
 
 ### Multimodal request bodies
 
-`POST /v1/embeddings` accepts structured inputs alongside the existing text format. Each object produces **one vector**, even when it combines text, multiple images, and audio. An array produces one vector per entry, in request order. This shared path works with EmbeddingGemma and compatible models loaded through `--embedding-model hf --hf-model-slug ...`, using SentenceTransformers' declared modality support. `GET /v1/models` lists the active model's `input_modalities`.
+`POST /v1/embeddings` accepts structured inputs alongside the existing text format. Each object produces **one vector**, even when it combines text, multiple images, and audio. An array produces one vector per entry, in request order. This shared path works with EmbeddingGemma, Nemotron-3.5, and compatible models loaded through `--embedding-model hf --hf-model-slug ...`, using SentenceTransformers' declared modality support. `GET /v1/models` lists the active model's `input_modalities`.
 
 ```json
 {
@@ -308,14 +344,14 @@ All available options (grouped by purpose):
 |---|---|---|
 | `config` | `"config.json"` | Path to the config JSON file, or set `BANANABREAD_CONFIG` |
 | **Model selection** | | |
-| `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, `"nemotron"`, `"nemotron-3"`, `"embeddinggemma"`, or `"hf"` |
+| `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, `"nemotron"`, `"nemotron-3"`, `"nemotron-3.5"`, `"embeddinggemma"`, or `"hf"` |
 | `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, `"none"`, or `null` (auto: Qwen uses Qwen; Nemotron and EmbeddingGemma disable reranking; otherwise MixedBread) |
 | `qwen_size` | `"0.6B"` | Qwen model size: `"0.6B"`, `"4B"`, or `"8B"` |
 | `qwen_backend` | `"torch"` | Qwen runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, `"torch-metal-8bit"`, `"torch-metal-4bit"`, or `"onnx-int8"` |
 | `qwen_compute_dtype` | `"bfloat16"` | Compute dtype for torch Qwen backends: `"bfloat16"`, `"float16"`, or `"float32"` |
 | `nemotron_backend` | `"torch"` | Nemotron runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, `"torch-metal-8bit"`, or `"torch-metal-4bit"` |
 | `nemotron_compute_dtype` | `"bfloat16"` | Compute dtype for Nemotron torch backends |
-| `nemotron_size` | `"1B"` | Nemotron-3 checkpoint size: `"1B"` or `"8B"` |
+| `nemotron_size` | `"1B"` | Nemotron-3 / Nemotron-3.5 checkpoint size: `"1B"` or `"8B"` |
 | `embeddinggemma_backend` | `"torch"` | EmbeddingGemma 2 runtime: `"torch"`, `"torch-bnb-4bit"`, `"torch-metal-4bit"`, or `"torch-metal-8bit"` |
 | `embeddinggemma_compute_dtype` | `"auto"` | `"auto"`, `"bfloat16"`, or `"float32"`; FP16 is unsafe for EmbeddingGemma 2 |
 | `embeddinggemma_modalities` | `"all"` | Encoders to load: `"all"`, `"text"`, `"text-image"`, or `"text-audio"` |
@@ -327,7 +363,7 @@ All available options (grouped by purpose):
 | `model_storage_dir` | `"./models"` | Directory used by `/v1/models/download` for explicit model snapshots |
 | `hf_download_backend` | `"auto"` | Hub download backend: `"auto"`, `"xet"`, or `"http"`; applies to supplied and custom models |
 | `hf_model_slug` | `null` | Hugging Face repo id used when `embedding_model="hf"` |
-| `hf_model_revision` | `null` | Optional branch, tag, or commit SHA for `hf_model_slug` or the dedicated EmbeddingGemma loader |
+| `hf_model_revision` | `null` | Optional branch, tag, or commit SHA for `hf_model_slug` or the dedicated EmbeddingGemma / Nemotron-3.5 loaders |
 | `hf_access_token` | `null` | Optional Hugging Face token for private or gated model metadata/downloads |
 | **Device placement** | | |
 | `embedding_device` | `"cpu"` | `"cpu"`, `"cuda"`, `"cuda:0"`, or `"mps"` |
@@ -651,7 +687,7 @@ curl -X POST http://localhost:8008/v1/models/download \
   }'
 ```
 
-The downloader accepts `author` + `path`, a direct repo id in `path`, or standard selectors such as `{"model_name":"qwen","size":"0.6B"}`, `{"model_name":"nemotron"}`, and `{"model_name":"nemotron-3","size":"8B"}`. It checks Hub metadata for SentenceTransformers or embedding capability before downloading unless `require_embedding_capable` is set to `false`.
+The downloader accepts `author` + `path`, a direct repo id in `path`, or standard selectors such as `{"model_name":"qwen","size":"0.6B"}`, `{"model_name":"nemotron"}`, `{"model_name":"nemotron-3","size":"8B"}`, and `{"model_name":"nemotron-3.5","size":"8B"}`. It checks Hub metadata for SentenceTransformers or embedding capability before downloading unless `require_embedding_capable` is set to `false`.
 
 For private or gated models, pass `hf_access_token` in the request body or configure `hf_access_token`/`--hf-access-token` on the server. The token is used for Hub metadata and snapshot download calls and is not returned in the response.
 

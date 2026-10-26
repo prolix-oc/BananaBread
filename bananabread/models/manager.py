@@ -18,6 +18,7 @@ from bananabread.models.nemotron import (
     Nemotron3EmbeddingModel,
     NemotronEmbeddingModel,
 )
+from bananabread.models.nemotron35 import NEMOTRON_35_MODEL_REPOS, Nemotron35EmbeddingModel
 from bananabread.models.embeddinggemma import EMBEDDINGGEMMA_MODEL_REPO, EmbeddingGemmaModel
 from bananabread.models.qwen import QwenRawModel, load_qwen_model
 from bananabread.models.jina_omni import JINA_OMNI_MODEL_REPOS, JinaOmniEmbeddingModel
@@ -341,6 +342,26 @@ def load_nemotron_3_embedding_model():
         compute_dtype=args.nemotron_compute_dtype,
     )
 
+def load_nemotron_35_embedding_model():
+    """Load an official Nemotron-3.5 text/image embedding checkpoint."""
+    repo_id = NEMOTRON_35_MODEL_REPOS[args.nemotron_size]
+    local_path = download_hf_model(
+        repo_id,
+        storage_dir=args.model_storage_dir,
+        revision=args.hf_model_revision,
+        token=args.hf_access_token,
+    )
+    logger.info(f"📦 Loaded Nemotron-3.5 embedding snapshot: {repo_id} -> {local_path}")
+    return repo_id, Nemotron35EmbeddingModel(
+        local_path,
+        size=args.nemotron_size,
+        truncate_dim=args.embedding_dim,
+        device=args.embedding_device,
+        backend=args.nemotron_backend,
+        compute_dtype=args.nemotron_compute_dtype,
+    )
+
+
 def load_embeddinggemma_model():
     """Load EmbeddingGemma 2's configured encoders from the managed Hub snapshot."""
     local_path = download_hf_model(
@@ -435,6 +456,8 @@ def load_embedding_model_instance():
         _, model = load_nemotron_embedding_model()
     elif args.embedding_model == 'nemotron-3':
         _, model = load_nemotron_3_embedding_model()
+    elif args.embedding_model == 'nemotron-3.5':
+        _, model = load_nemotron_35_embedding_model()
     elif args.embedding_model == 'embeddinggemma':
         _, model = load_embeddinggemma_model()
     elif args.embedding_model == 'jina-v5-omni-small' or args.embedding_model == 'jina-v5-omni-nano':
@@ -470,7 +493,7 @@ def initialize_models():
         if args.embedding_model == 'qwen':
             reranking_model_choice = 'qwen'
             logger.info("No reranking model specified, using qwen (same as embedding model)")
-        elif args.embedding_model in {'jina-v5-omni-small', 'jina-v5-omni-nano', 'nemotron-vl', 'nemotron', 'nemotron-3', 'embeddinggemma', 'harrier'}:
+        elif args.embedding_model in {'jina-v5-omni-small', 'jina-v5-omni-nano', 'nemotron-vl', 'nemotron', 'nemotron-3', 'nemotron-3.5', 'embeddinggemma', 'harrier'}:
             reranking_model_choice = None
             logger.info(f"No reranking model specified, leaving {args.embedding_model} in embedding-only mode")
         else:
@@ -504,6 +527,11 @@ def initialize_models():
     elif args.embedding_model == 'nemotron-3':
         logger.info(
             f"Using NVIDIA Nemotron-3 model: {NEMOTRON_3_MODEL_REPOS[args.nemotron_size]} "
+            f"(backend={args.nemotron_backend})"
+        )
+    elif args.embedding_model == 'nemotron-3.5':
+        logger.info(
+            f"Using NVIDIA Nemotron-3.5 model: {NEMOTRON_35_MODEL_REPOS[args.nemotron_size]} "
             f"(backend={args.nemotron_backend})"
         )
     elif args.embedding_model == 'jina-v5-omni-small' or args.embedding_model == 'jina-v5-omni-nano':
@@ -548,6 +576,8 @@ def initialize_models():
             embedding_model_name = NEMOTRON_MODEL_REPO
         elif args.embedding_model == 'nemotron-3':
             embedding_model_name = NEMOTRON_3_MODEL_REPOS[args.nemotron_size]
+        elif args.embedding_model == 'nemotron-3.5':
+            embedding_model_name = NEMOTRON_35_MODEL_REPOS[args.nemotron_size]
         elif args.embedding_model == 'embeddinggemma':
             embedding_model_name = EMBEDDINGGEMMA_MODEL_REPO
         elif args.embedding_model == 'jina-v5-omni-small' or args.embedding_model == 'jina-v5-omni-nano':
@@ -588,6 +618,8 @@ def initialize_models():
             embedding_model_name, embedding_model = load_nemotron_embedding_model()
         elif args.embedding_model == 'nemotron-3':
             embedding_model_name, embedding_model = load_nemotron_3_embedding_model()
+        elif args.embedding_model == 'nemotron-3.5':
+            embedding_model_name, embedding_model = load_nemotron_35_embedding_model()
         elif args.embedding_model == 'embeddinggemma':
             embedding_model_name, embedding_model = load_embeddinggemma_model()
         elif args.embedding_model == 'jina-v5-omni-small' or args.embedding_model == 'jina-v5-omni-nano':

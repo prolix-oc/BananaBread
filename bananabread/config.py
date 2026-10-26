@@ -212,7 +212,7 @@ DEFAULTS = {
 }
 
 CONFIG_CHOICES = {
-    "embedding_model": {"mixedbread", "qwen", "nemotron", "nemotron-3", "embeddinggemma", "hf", "jina-v5-omni-small", "jina-v5-omni-nano", "nemotron-vl", "harrier"},
+    "embedding_model": {"mixedbread", "qwen", "nemotron", "nemotron-3", "nemotron-3.5", "embeddinggemma", "hf", "jina-v5-omni-small", "jina-v5-omni-nano", "nemotron-vl", "harrier"},
     "reranking_model": {"mixedbread", "qwen", "none", None},
     "qwen_size": {"0.6B", "4B", "8B"},
     "qwen_backend": {
@@ -329,7 +329,7 @@ def _require_requested_accelerators(parsed_args) -> None:
         requested.append(f"embedding_device={parsed_args.embedding_device!r}")
 
     if parsed_args.reranking_model is None:
-        reranking_enabled = parsed_args.embedding_model not in {"nemotron", "nemotron-3", "embeddinggemma"}
+        reranking_enabled = parsed_args.embedding_model not in {"nemotron", "nemotron-3", "nemotron-3.5", "embeddinggemma"}
     else:
         reranking_enabled = parsed_args.reranking_model != "none"
     if reranking_enabled and parsed_args.rerank_device.startswith("cuda"):
@@ -393,6 +393,14 @@ def validate_args(parsed_args):
         if parsed_args.embedding_dim not in {128, 256, 512, 768}:
             raise ValueError("EmbeddingGemma 2 embedding_dim must be 128, 256, 512, or 768")
 
+    if parsed_args.embedding_model == "nemotron-3.5":
+        native_dim = 2048 if parsed_args.nemotron_size == "1B" else 4096
+        if not 1 <= parsed_args.embedding_dim <= native_dim:
+            raise ValueError(
+                f"Nemotron-3.5 {parsed_args.nemotron_size} embedding_dim must be "
+                f"between 1 and {native_dim}"
+            )
+
     active_qwen_devices = []
     reranking_model = parsed_args.reranking_model
     if reranking_model is None and parsed_args.embedding_model == "qwen":
@@ -417,7 +425,7 @@ def validate_args(parsed_args):
             parsed_args.qwen_compute_dtype = "float16"
         if (
             getattr(parsed_args, "nemotron_compute_dtype", None) == "bfloat16"
-            and parsed_args.embedding_model in {"nemotron", "nemotron-3"}
+            and parsed_args.embedding_model in {"nemotron", "nemotron-3", "nemotron-3.5"}
             and _uses_cuda_device(parsed_args.embedding_device)
         ):
             logger.warning(
@@ -444,7 +452,7 @@ def validate_args(parsed_args):
 
     nemotron_device = parsed_args.embedding_device
     if (
-        parsed_args.embedding_model in {"nemotron", "nemotron-3"}
+        parsed_args.embedding_model in {"nemotron", "nemotron-3", "nemotron-3.5"}
         and parsed_args.nemotron_backend.startswith("torch-bnb")
         and nemotron_device != "auto"
         and not nemotron_device.startswith("cuda")
@@ -457,7 +465,7 @@ def validate_args(parsed_args):
         parsed_args.nemotron_backend = "torch"
 
     if (
-        parsed_args.embedding_model in {"nemotron", "nemotron-3"}
+        parsed_args.embedding_model in {"nemotron", "nemotron-3", "nemotron-3.5"}
         and parsed_args.nemotron_backend.startswith("torch-metal")
         and not nemotron_device.startswith("mps")
     ):
@@ -571,7 +579,7 @@ def parse_args():
                        help=f"Number of warmup inference samples to run (default: {DEFAULTS['warmup_samples']})")
 
     # Embedding model selection arguments
-    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'nemotron-3', 'embeddinggemma', 'hf', 'jina-v5-omni-small', 'jina-v5-omni-nano', 'nemotron-vl', 'harrier'], default=DEFAULTS["embedding_model"],
+    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'nemotron-3', 'nemotron-3.5', 'embeddinggemma', 'hf', 'jina-v5-omni-small', 'jina-v5-omni-nano', 'nemotron-vl', 'harrier'], default=DEFAULTS["embedding_model"],
                        help=f"Embedding model to use (default: {DEFAULTS['embedding_model']})")
     parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default=DEFAULTS["qwen_size"],
                        help=f"Qwen model size to use when --embedding-model=qwen (default: {DEFAULTS['qwen_size']})")
@@ -584,7 +592,7 @@ def parse_args():
     parser.add_argument("--nemotron-compute-dtype", type=str, choices=['bfloat16', 'float16', 'float32'], default=DEFAULTS["nemotron_compute_dtype"],
                        help=f"Compute dtype for Nemotron torch backends (default: {DEFAULTS['nemotron_compute_dtype']})")
     parser.add_argument("--nemotron-size", type=str, choices=['1B', '8B'], default=DEFAULTS["nemotron_size"],
-                       help=f"Nemotron-3 model size to use when --embedding-model=nemotron-3 (default: {DEFAULTS['nemotron_size']})")
+                       help=f"Nemotron-3 / Nemotron-3.5 model size (default: {DEFAULTS['nemotron_size']})")
     parser.add_argument("--embeddinggemma-backend", choices=['torch', 'torch-bnb-4bit', 'torch-metal-8bit', 'torch-metal-4bit'], default=DEFAULTS["embeddinggemma_backend"],
                        help="EmbeddingGemma 2 runtime; install cuda-quant for NF4 or metal-quant for Metal")
     parser.add_argument("--embeddinggemma-compute-dtype", choices=['auto', 'bfloat16', 'float32'], default=DEFAULTS["embeddinggemma_compute_dtype"],

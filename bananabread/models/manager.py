@@ -22,6 +22,7 @@ from bananabread.models.embeddinggemma import EMBEDDINGGEMMA_MODEL_REPO, Embeddi
 from bananabread.models.qwen import QwenRawModel, load_qwen_model
 from bananabread.models.jina_omni import JINA_OMNI_MODEL_REPOS, JinaOmniEmbeddingModel
 from bananabread.models.nemotron_vl import NEMOTRON_VL_MODEL_REPO, NemotronVLEmbeddingModel
+from bananabread.models.harrier import HARRIER_MODEL_REPO, HarrierEmbeddingModel
 from bananabread.multimodal import SentenceTransformerAdapter
 
 # Global model references
@@ -397,6 +398,23 @@ def load_nemotron_vl_embedding_model():
     )
 
 
+def load_harrier_embedding_model():
+    local_path = download_hf_model(
+        HARRIER_MODEL_REPO,
+        storage_dir=args.model_storage_dir,
+        revision=args.hf_model_revision,
+        token=args.hf_access_token,
+    )
+    logger.info(f"📦 Loaded Harrier snapshot: {HARRIER_MODEL_REPO} -> {local_path}")
+    return HARRIER_MODEL_REPO, HarrierEmbeddingModel(
+        local_path,
+        truncate_dim=args.embedding_dim,
+        device=args.embedding_device,
+        backend=args.harrier_backend,
+        compute_dtype=args.harrier_compute_dtype,
+    )
+
+
 def load_embedding_model_instance():
     """Load a single embedding model instance based on args"""
     if args.embedding_model == 'qwen':
@@ -423,6 +441,8 @@ def load_embedding_model_instance():
         _, model = load_jina_omni_embedding_model()
     elif args.embedding_model == 'nemotron-vl':
         _, model = load_nemotron_vl_embedding_model()
+    elif args.embedding_model == 'harrier':
+        _, model = load_harrier_embedding_model()
     else:
         # MixedBread model
         model = SentenceTransformer(
@@ -450,7 +470,7 @@ def initialize_models():
         if args.embedding_model == 'qwen':
             reranking_model_choice = 'qwen'
             logger.info("No reranking model specified, using qwen (same as embedding model)")
-        elif args.embedding_model in {'jina-v5-omni-small', 'jina-v5-omni-nano', 'nemotron-vl', 'nemotron', 'nemotron-3', 'embeddinggemma'}:
+        elif args.embedding_model in {'jina-v5-omni-small', 'jina-v5-omni-nano', 'nemotron-vl', 'nemotron', 'nemotron-3', 'embeddinggemma', 'harrier'}:
             reranking_model_choice = None
             logger.info(f"No reranking model specified, leaving {args.embedding_model} in embedding-only mode")
         else:
@@ -498,6 +518,8 @@ def initialize_models():
             f"Using NVIDIA Nemotron VL model: {NEMOTRON_VL_MODEL_REPO} "
             f"(backend={args.nemotron_vl_backend}, modalities={args.nemotron_vl_modalities})"
         )
+    elif args.embedding_model == 'harrier':
+        logger.info(f"Using Microsoft Harrier model: {HARRIER_MODEL_REPO} (backend={args.harrier_backend})")
     
     shared_qwen_pool = None
     
@@ -534,6 +556,8 @@ def initialize_models():
             )
         elif args.embedding_model == 'nemotron-vl':
             embedding_model_name = NEMOTRON_VL_MODEL_REPO
+        elif args.embedding_model == 'harrier':
+            embedding_model_name = HARRIER_MODEL_REPO
         else:
             embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
         
@@ -570,6 +594,8 @@ def initialize_models():
             embedding_model_name, embedding_model = load_jina_omni_embedding_model()
         elif args.embedding_model == 'nemotron-vl':
             embedding_model_name, embedding_model = load_nemotron_vl_embedding_model()
+        elif args.embedding_model == 'harrier':
+            embedding_model_name, embedding_model = load_harrier_embedding_model()
         else:
             embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
             embedding_model = SentenceTransformer(embedding_model_name, truncate_dim=args.embedding_dim, device=args.embedding_device)

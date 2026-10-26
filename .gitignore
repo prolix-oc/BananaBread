@@ -14,3 +14,4 @@ config_example_embeddinggemma.json
 config_example_jina_nano.json
 config_example_jina_small.json
 config_example_nemotron_vl.json
+config_example_harrier.json

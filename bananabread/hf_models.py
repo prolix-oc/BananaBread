@@ -32,6 +32,8 @@ STANDARD_MODEL_REPOS = {
     "jina-v5-omni-small": "jinaai/jina-embeddings-v5-omni-small",
     "jina-v5-omni-nano": "jinaai/jina-embeddings-v5-omni-nano",
     "nemotron-vl": "nvidia/llama-nemotron-embed-vl-1b-v2",
+    "harrier": "microsoft/harrier-oss-v1-0.6b",
+    "harrier-oss-v1-0.6b": "microsoft/harrier-oss-v1-0.6b",
 }
 
 HF_DOWNLOAD_BACKENDS = {"auto", "http", "xet"}

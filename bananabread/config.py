@@ -182,6 +182,8 @@ DEFAULTS = {
     "nemotron_vl_backend": "torch",
     "nemotron_vl_compute_dtype": "bfloat16",
     "nemotron_vl_modalities": "text-image",
+    "harrier_backend": "torch",
+    "harrier_compute_dtype": "bfloat16",
     "qwen_onnx_model_path": None,
     "qwen_onnx_provider": "CPUExecutionProvider",
     "qwen_max_length": 8192,
@@ -210,7 +212,7 @@ DEFAULTS = {
 }
 
 CONFIG_CHOICES = {
-    "embedding_model": {"mixedbread", "qwen", "nemotron", "nemotron-3", "embeddinggemma", "hf", "jina-v5-omni-small", "jina-v5-omni-nano", "nemotron-vl"},
+    "embedding_model": {"mixedbread", "qwen", "nemotron", "nemotron-3", "embeddinggemma", "hf", "jina-v5-omni-small", "jina-v5-omni-nano", "nemotron-vl", "harrier"},
     "reranking_model": {"mixedbread", "qwen", "none", None},
     "qwen_size": {"0.6B", "4B", "8B"},
     "qwen_backend": {
@@ -240,6 +242,8 @@ CONFIG_CHOICES = {
     "nemotron_vl_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit", "torch-metal-8bit", "torch-metal-4bit"},
     "nemotron_vl_compute_dtype": {"bfloat16", "float16", "float32"},
     "nemotron_vl_modalities": {"text-image", "text"},
+    "harrier_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit", "torch-metal-8bit", "torch-metal-4bit"},
+    "harrier_compute_dtype": {"bfloat16", "float16", "float32"},
     "hf_download_backend": {"auto", "http", "xet"},
     "quant": {"standard", "ubinary", "int8"},
     "log_level": {"DEBUG", "INFO", "WARNING", "ERROR"},
@@ -567,7 +571,7 @@ def parse_args():
                        help=f"Number of warmup inference samples to run (default: {DEFAULTS['warmup_samples']})")
 
     # Embedding model selection arguments
-    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'nemotron-3', 'embeddinggemma', 'hf', 'jina-v5-omni-small', 'jina-v5-omni-nano', 'nemotron-vl'], default=DEFAULTS["embedding_model"],
+    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'nemotron-3', 'embeddinggemma', 'hf', 'jina-v5-omni-small', 'jina-v5-omni-nano', 'nemotron-vl', 'harrier'], default=DEFAULTS["embedding_model"],
                        help=f"Embedding model to use (default: {DEFAULTS['embedding_model']})")
     parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default=DEFAULTS["qwen_size"],
                        help=f"Qwen model size to use when --embedding-model=qwen (default: {DEFAULTS['qwen_size']})")
@@ -599,6 +603,10 @@ def parse_args():
                        help="Nemotron VL compute precision")
     parser.add_argument("--nemotron-vl-modalities", choices=['text-image', 'text'], default=DEFAULTS["nemotron_vl_modalities"],
                        help="Nemotron VL encoders to load (default: text-image)")
+    parser.add_argument("--harrier-backend", choices=['torch', 'torch-bnb-8bit', 'torch-bnb-4bit', 'torch-metal-8bit', 'torch-metal-4bit'], default=DEFAULTS["harrier_backend"],
+                       help="Harrier OSS runtime; install cuda-quant for NF4 or metal-quant for Metal")
+    parser.add_argument("--harrier-compute-dtype", choices=['bfloat16', 'float16', 'float32'], default=DEFAULTS["harrier_compute_dtype"],
+                       help="Harrier OSS compute precision")
     parser.add_argument("--qwen-onnx-model-path", type=str, default=DEFAULTS.get("qwen_onnx_model_path"),
                        help="Local ONNX model directory or .onnx file for --qwen-backend=onnx-int8")
     parser.add_argument("--qwen-onnx-provider", type=str, default=DEFAULTS["qwen_onnx_provider"],

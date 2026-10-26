@@ -17,6 +17,7 @@ BananaBread downloads a specialized model to your machine and runs a local serve
 | [Jina Embeddings v5 Omni Small](https://huggingface.co/jinaai/jina-embeddings-v5-omni-small) | Embedding | Multimodal (text, image, audio, video), 1024-dim, ~1.74B params, 32K tokens. |
 | [Jina Embeddings v5 Omni Nano](https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano) | Embedding | Multimodal (text, image, audio, video), 768-dim, ~1.04B params, 8K tokens. |
 | [NVIDIA Llama Nemotron Embed VL 1B v2](https://huggingface.co/nvidia/llama-nemotron-embed-vl-1b-v2) | Embedding | Text + image retrieval, 2048-dim, 10240-token budget with image tiles. |
+| [Microsoft Harrier OSS v1 0.6B](https://huggingface.co/microsoft/harrier-oss-v1-0.6b) | Embedding | Multilingual text retrieval, 1024-dim, 32K tokens, last-token pooling. |
 | [RoBERTa go_emotions](https://huggingface.co/SamLowe/roberta-base-go_emotions) | Classification | Emotion classification. Loaded on first use. |
 
 ---

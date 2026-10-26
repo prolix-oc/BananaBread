@@ -259,6 +259,65 @@ def test_endpoint_text_and_base64_output_remain_supported(client, route):
     assert transport.post(route, json={"input": [1, 2]}).status_code == 400
 
 
+@pytest.mark.parametrize("inputs", ["first", ["first", "second", "third"]])
+def test_ollama_embed_returns_one_vector_per_input_in_order(client, monkeypatch, inputs):
+    transport, model, charged = client
+    vectors = {"first": [1.0, 0.0], "second": [0.0, 1.0], "third": [-1.0, 0.0]}
+    monkeypatch.setattr(model, "encode", lambda texts, **kw: np.array([vectors[t] for t in texts]))
+    response = transport.post("/api/embed", json={"model": "test/multimodal", "input": inputs})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    texts = [inputs] if isinstance(inputs, str) else inputs
+    assert data["embeddings"] == [vectors[t] for t in texts]
+    assert "embedding" not in data
+    assert data["model"] == "test/multimodal"
+    assert data["prompt_eval_count"] == len(texts)
+    assert type(data["total_duration"]) is int and data["total_duration"] >= 0
+    assert data["load_duration"] == 0
+    assert charged == [len(texts)]
+
+
+def test_ollama_legacy_embedding_response_is_preserved(client):
+    transport, model, charged = client
+    response = transport.post("/api/embeddings", json={"model": "test/multimodal", "prompt": "hello"})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"embedding": [1.0, 0.0], "model": "test/multimodal"}
+    assert charged == [1]
+
+
+def test_ollama_and_uncached_openai_use_the_same_document_inference(client, monkeypatch):
+    transport, model, charged = client
+    import bananabread.api as api
+
+    monkeypatch.setattr(api.args, "embedding_batch_size", 2)
+    vectors = {"first": [1.0, 0.0], "second": [0.0, 1.0], "third": [-1.0, 0.0]}
+
+    def encode(texts, **kwargs):
+        model.calls.append((texts, kwargs))
+        return torch.tensor([vectors[text] for text in texts], dtype=torch.bfloat16)
+
+    monkeypatch.setattr(model, "encode", encode)
+    inputs = list(vectors)
+    openai = transport.post("/v1/embeddings", json={"input": inputs})
+    assert openai.status_code == 200, openai.text
+    openai_calls = model.calls[:]
+    model.calls.clear()
+    ollama = transport.post("/api/embed", json={"model": "test/multimodal", "input": inputs})
+    assert ollama.status_code == 200, ollama.text
+    assert model.calls == openai_calls
+    assert [item["embedding"] for item in openai.json()["data"]] == ollama.json()["embeddings"]
+    assert charged == [3, 3]
+
+
+@pytest.mark.parametrize("route", ["/api/embed", "/api/embeddings"])
+def test_ollama_rejects_missing_inputs_before_inference(client, route):
+    transport, model, charged = client
+    response = transport.post(route, json={"model": "test/multimodal"})
+    assert response.status_code == 400
+    assert model.calls == []
+    assert charged == []
+
+
 @pytest.mark.parametrize("route,field", [
     ("/v1/embeddings", "input"), ("/api/embed", "input"), ("/embedding", "content"),
     ("/v0/embeddings", "input"), ("/api/v0/embeddings", "input"),
@@ -285,6 +344,9 @@ def test_endpoint_discovers_model_modalities_and_publishes_the_contract(client):
     assert "MediaBody" in schema["components"]["schemas"]
     for route in ("/v0/embeddings", "/api/v0/embeddings"):
         assert "post" in schema["paths"][route]
+    for route, name in (("/api/embed", "OllamaEmbedResponse"), ("/api/embeddings", "OllamaEmbeddingResponse")):
+        response_schema = schema["paths"][route]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+        assert response_schema["$ref"] == f"#/components/schemas/{name}"
 
 
 def test_endpoint_selects_pool_instance_on_the_inference_worker(client, monkeypatch):

@@ -19,7 +19,7 @@ from bananabread.config import (
 )
 from bananabread.schemas import (
     RerankRequest, EmbeddingRequest, ClassificationRequest,
-    OllamaEmbeddingRequest, OllamaEmbeddingResponse,
+    OllamaEmbeddingRequest, OllamaEmbeddingResponse, OllamaEmbedResponse,
     LlamaCppEmbeddingRequest, LlamaCppEmbeddingResponse,
     HFModelDownloadRequest, HFModelDownloadResponse,
     CreateUserRequest, CreateUserResponse, ManagementConfigUpdate,
@@ -687,63 +687,57 @@ async def download_model_endpoint(request: HFModelDownloadRequest, api_key: str 
         logger.error(f"❌ Error downloading Hugging Face model '{repo_id}': {e}", exc_info=True)
         raise HTTPException(status_code=502, detail=str(e))
 
-@app.post("/api/embeddings")
-@app.post("/api/embed")
-async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest, auth: dict = Depends(get_api_user)):
-    if request.prompt:
-        inputs = [request.prompt]
-    elif request.input:
-        if isinstance(request.input, str):
-            inputs = [request.input]
-        elif isinstance(request.input, list):
-            inputs = request.input
-        else:
-            raise HTTPException(status_code=400, detail="Input must be a string or list of strings")
-    else:
-        raise HTTPException(status_code=400, detail="Either 'prompt' or 'input' must be provided")
-    
+async def encode_ollama_embeddings(inputs: str | list[str] | None, auth: dict):
     if not inputs:
-        raise HTTPException(status_code=400, detail="Input must be provided")
-    consume_user_tokens(auth["username"], inputs)
-    
+        raise HTTPException(status_code=400, detail="Either 'prompt' or 'input' must be provided")
+    if isinstance(inputs, str):
+        inputs = [inputs]
+    if get_embedding_model_for_token_count() is None:
+        raise HTTPException(status_code=503, detail="Embedding model is not loaded")
+    prompt_tokens = consume_user_tokens(auth["username"], inputs)
+
     logger.info(f"📄 Processing {len(inputs)} documents for Ollama embeddings")
-    
+
     def get_embedding_model_and_encode(inputs):
         if models_manager.embedding_model_pool:
             model = models_manager.embedding_model_pool.get_model()
         else:
             model = models_manager.embedding_model
         return encode_inputs(model, inputs, "document")
-    
-    docs_embeddings = await run_in_threadpool_with_executor(
-        embedding_executor,
-        get_embedding_model_and_encode,
-        inputs
+
+    try:
+        docs_embeddings = await run_in_threadpool_with_executor(
+            embedding_executor, get_embedding_model_and_encode, inputs
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if isinstance(docs_embeddings, torch.Tensor):
+        docs_embeddings = docs_embeddings.detach().float().cpu()
+    embeddings = docs_embeddings.tolist()
+    return embeddings, prompt_tokens
+
+
+@app.post("/api/embeddings", response_model=OllamaEmbeddingResponse)
+async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest, auth: dict = Depends(get_api_user)):
+    embeddings, _ = await encode_ollama_embeddings(request.prompt or request.input, auth)
+    return OllamaEmbeddingResponse(
+        embedding=embeddings[0], model=models_manager.embedding_model_name
     )
 
-    # Convert BFloat16 to Float32 before tolist() (numpy/tolist doesn't support bf16)
-    if hasattr(docs_embeddings, 'dtype') and docs_embeddings.dtype == torch.bfloat16:
-        docs_embeddings = docs_embeddings.to(torch.float32)
 
-    if len(inputs) == 1:
-        if hasattr(docs_embeddings, 'tolist'):
-            embedding = docs_embeddings[0].tolist()
-        else:
-            embedding = docs_embeddings[0]
-    else:
-        if hasattr(docs_embeddings, 'tolist'):
-            embedding = docs_embeddings[0].tolist()
-        else:
-            embedding = docs_embeddings[0]
-    
-    if not isinstance(embedding, list):
-        embedding = [float(embedding)] if isinstance(embedding, (int, float)) else []
-    else:
-        embedding = [float(x) for x in embedding]
-    
-    return OllamaEmbeddingResponse(
-        embedding=embedding,
-        model=models_manager.embedding_model_name
+@app.post("/api/embed", response_model=OllamaEmbedResponse)
+async def ollama_embed_endpoint(request: OllamaEmbeddingRequest, auth: dict = Depends(get_api_user)):
+    started = time.perf_counter_ns()
+    inputs = request.input if request.input is not None else request.prompt
+    embeddings, prompt_tokens = await encode_ollama_embeddings(inputs, auth)
+    return OllamaEmbedResponse(
+        model=models_manager.embedding_model_name,
+        embeddings=embeddings,
+        total_duration=time.perf_counter_ns() - started,
+        # Models are already loaded during server startup.
+        load_duration=0,
+        prompt_eval_count=prompt_tokens,
     )
 
 @app.post("/embedding")

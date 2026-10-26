@@ -636,8 +636,8 @@ Set `"disable_api_key_auth": true` in `config.json` (or use `--disable-api-key-a
 | `GET /v1/models` | User key | OpenAI | List loaded models |
 | `GET /v1/health` | User key | Custom | Health check |
 | `GET /v1/memory` | Management key | Custom | Memory and thread usage stats |
-| `POST /api/embeddings` | User key | Ollama | Ollama-compatible embedding |
-| `POST /api/embed` | User key | Ollama | Ollama-compatible embedding (alt) |
+| `POST /api/embeddings` | User key | Ollama | Legacy `prompt` request; returns a single `embedding` vector |
+| `POST /api/embed` | User key | Ollama | `input` string or batch; returns an `embeddings` array in input order |
 | `POST /embedding` | User key | llama.cpp | llama.cpp-compatible embedding |
 | `GET /` | No | — | Server info and status |
 
@@ -782,7 +782,7 @@ BananaBread is designed to impersonate other servers. It responds to model listi
 - **SillyTavern**: Point it at `http://localhost:8008` as a llama.cpp backend. BananaBread responds to the models endpoint, so SillyTavern will treat it as a full llama.cpp instance.
 - **OpenAI-compatible clients**: Use the `/v1/embeddings` endpoint with your API key.
 - **LM Studio-compatible clients**: Use `/api/v0/embeddings` or `/v0/embeddings` with the same request body as `/v1/embeddings`.
-- **Ollama-compatible clients**: Use `/api/embeddings` or `/api/embed` with your API key, or enable `disable_api_key_auth` for clients that cannot send one.
+- **Ollama-compatible clients**: Use `/api/embed` with `{"model":"your-model","input":["First text","Second text"]}`. The response includes `embeddings`, with one vector per input, plus `model`, `total_duration`, `load_duration`, and `prompt_eval_count`. Durations are nanoseconds; `load_duration` is zero because models load at startup. Legacy clients can use `/api/embeddings` with `prompt` to receive a single `embedding` vector. Send your API key, or enable `disable_api_key_auth` for clients that cannot send one.
 
 ---
 

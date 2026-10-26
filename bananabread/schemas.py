@@ -141,6 +141,13 @@ class OllamaEmbeddingResponse(BaseModel):
     embedding: list[float]
     model: str
 
+class OllamaEmbedResponse(BaseModel):
+    model: str
+    embeddings: list[list[float]]
+    total_duration: int
+    load_duration: int = 0
+    prompt_eval_count: int
+
 # ----- Llama.cpp Compatible Schemas -----
 
 class LlamaCppEmbeddingRequest(BaseModel):

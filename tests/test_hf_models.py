@@ -55,6 +55,11 @@ def test_resolves_standard_nemotron_selector():
     )
 
 
+@pytest.mark.parametrize("selector", ["embeddinggemma", "embeddinggemma-2"])
+def test_resolves_embeddinggemma_selector(selector):
+    assert resolve_model_repo_id(model_name=selector) == "google/embeddinggemma-2"
+
+
 def test_resolves_nemotron_3_selectors():
     assert (
         resolve_model_repo_id(model_name="nemotron-3")

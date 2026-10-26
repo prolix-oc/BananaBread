@@ -1,6 +1,7 @@
 import time
 import threading
 import hashlib
+import json
 import sys
 import torch
 from collections import OrderedDict
@@ -384,14 +385,14 @@ def get_rerank_cache_key(query: str, documents: list[str], top_k: int, return_do
     return m.hexdigest()
 
 def get_embedding_cache_key(
-    input_data: list[str],
+    input_data: list[Any],
     encoding_format: str = "float",
     quantization: str = "standard",
     input_type: str = "document",
 ) -> str:
     m = hashlib.sha256()
-    for item in input_data:
-        m.update(item.encode("utf-8"))
+    # Preserve item boundaries and media bodies: ["ab", "c"] differs from ["a", "bc"].
+    m.update(json.dumps(input_data, sort_keys=True, ensure_ascii=False).encode("utf-8"))
     m.update(encoding_format.encode("utf-8"))
     m.update(quantization.encode("utf-8"))
     m.update(input_type.encode("utf-8"))

@@ -1,5 +1,5 @@
 from typing import Optional, List, Union, Dict, Any, Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ----- Request Schemas -----
 
@@ -10,10 +10,33 @@ class RerankRequest(BaseModel):
     return_documents: bool = False
     task_description: Optional[str] = None
 
-# Embedding request schema matching OpenAI's format:
+class MediaBody(BaseModel):
+    """An inline encoded file; no remote URLs or server filesystem paths."""
+
+    model_config = ConfigDict(extra="forbid")
+    data: str = Field(min_length=1, max_length=28_000_000)
+    media_type: str
+
+
+class MultimodalInput(BaseModel):
+    """One embedding from text and/or inline image/audio bodies."""
+
+    model_config = ConfigDict(extra="forbid")
+    text: str | None = None
+    image: str | MediaBody | list[str | MediaBody] | None = None
+    audio: str | MediaBody | list[str | MediaBody] | None = None
+
+    @model_validator(mode="after")
+    def require_content(self):
+        if not self.text and not self.image and not self.audio:
+            raise ValueError("Provide text, image, or audio content")
+        return self
+
+
+# OpenAI text format plus BananaBread's structured multimodal extension.
 class EmbeddingRequest(BaseModel):
     model: str = "mixedbread-ai/mxbai-embed-large-v1"
-    input: Union[str, List[str], List[int], List[List[int]]]
+    input: Union[str, MultimodalInput, List[Union[str, MultimodalInput]], List[int], List[List[int]]]
     encoding_format: str = "float" # float or base64
     user: Optional[str] = None
     input_type: Literal["document", "query"] = "document"

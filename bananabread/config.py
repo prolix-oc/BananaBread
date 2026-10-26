@@ -173,6 +173,14 @@ DEFAULTS = {
     "nemotron_backend": "torch",
     "nemotron_compute_dtype": "bfloat16",
     "nemotron_size": "1B",
+    "embeddinggemma_backend": "torch",
+    "embeddinggemma_compute_dtype": "auto",
+    "jina_backend": "torch",
+    "jina_compute_dtype": "auto",
+    "jina_modalities": "all",
+    "nemotron_vl_backend": "torch",
+    "nemotron_vl_compute_dtype": "bfloat16",
+    "nemotron_vl_modalities": "text-image",
     "qwen_onnx_model_path": None,
     "qwen_onnx_provider": "CPUExecutionProvider",
     "qwen_max_length": 8192,
@@ -201,7 +209,7 @@ DEFAULTS = {
 }
 
 CONFIG_CHOICES = {
-    "embedding_model": {"mixedbread", "qwen", "nemotron", "nemotron-3", "hf"},
+    "embedding_model": {"mixedbread", "qwen", "nemotron", "nemotron-3", "embeddinggemma", "hf", "jina-v5-omni-small", "jina-v5-omni-nano", "nemotron-vl"},
     "reranking_model": {"mixedbread", "qwen", "none", None},
     "qwen_size": {"0.6B", "4B", "8B"},
     "qwen_backend": {
@@ -222,6 +230,14 @@ CONFIG_CHOICES = {
     },
     "nemotron_compute_dtype": {"bfloat16", "float16", "float32"},
     "nemotron_size": {"1B", "8B"},
+    "embeddinggemma_backend": {"torch", "torch-bnb-4bit", "torch-metal-8bit", "torch-metal-4bit"},
+    "embeddinggemma_compute_dtype": {"auto", "bfloat16", "float32"},
+    "jina_backend": {"torch", "torch-bnb-4bit", "torch-metal-4bit", "torch-metal-8bit"},
+    "jina_compute_dtype": {"auto", "bfloat16", "float32"},
+    "jina_modalities": {"all", "text", "text-image", "text-audio"},
+    "nemotron_vl_backend": {"torch", "torch-bnb-8bit", "torch-bnb-4bit", "torch-metal-8bit", "torch-metal-4bit"},
+    "nemotron_vl_compute_dtype": {"bfloat16", "float16", "float32"},
+    "nemotron_vl_modalities": {"text-image", "text"},
     "hf_download_backend": {"auto", "http", "xet"},
     "quant": {"standard", "ubinary", "int8"},
     "log_level": {"DEBUG", "INFO", "WARNING", "ERROR"},
@@ -307,7 +323,7 @@ def _require_requested_accelerators(parsed_args) -> None:
         requested.append(f"embedding_device={parsed_args.embedding_device!r}")
 
     if parsed_args.reranking_model is None:
-        reranking_enabled = parsed_args.embedding_model not in {"nemotron", "nemotron-3"}
+        reranking_enabled = parsed_args.embedding_model not in {"nemotron", "nemotron-3", "embeddinggemma"}
     else:
         reranking_enabled = parsed_args.reranking_model != "none"
     if reranking_enabled and parsed_args.rerank_device.startswith("cuda"):
@@ -363,6 +379,13 @@ def validate_args(parsed_args):
             setattr(parsed_args, key, value.strip().lower())
 
     _require_requested_accelerators(parsed_args)
+
+    if parsed_args.embedding_model == "embeddinggemma":
+        # The shared 1024d default belongs to MixedBread; Gemma's native size is 768d.
+        if parsed_args.embedding_dim == DEFAULTS["embedding_dim"]:
+            parsed_args.embedding_dim = 768
+        if parsed_args.embedding_dim not in {128, 256, 512, 768}:
+            raise ValueError("EmbeddingGemma 2 embedding_dim must be 128, 256, 512, or 768")
 
     active_qwen_devices = []
     reranking_model = parsed_args.reranking_model
@@ -542,7 +565,7 @@ def parse_args():
                        help=f"Number of warmup inference samples to run (default: {DEFAULTS['warmup_samples']})")
 
     # Embedding model selection arguments
-    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'nemotron-3', 'hf'], default=DEFAULTS["embedding_model"],
+    parser.add_argument("--embedding-model", type=str, choices=['mixedbread', 'qwen', 'nemotron', 'nemotron-3', 'embeddinggemma', 'hf'], default=DEFAULTS["embedding_model"],
                        help=f"Embedding model to use (default: {DEFAULTS['embedding_model']})")
     parser.add_argument("--qwen-size", type=str, choices=['0.6B', '4B', '8B'], default=DEFAULTS["qwen_size"],
                        help=f"Qwen model size to use when --embedding-model=qwen (default: {DEFAULTS['qwen_size']})")
@@ -556,6 +579,12 @@ def parse_args():
                        help=f"Compute dtype for Nemotron torch backends (default: {DEFAULTS['nemotron_compute_dtype']})")
     parser.add_argument("--nemotron-size", type=str, choices=['1B', '8B'], default=DEFAULTS["nemotron_size"],
                        help=f"Nemotron-3 model size to use when --embedding-model=nemotron-3 (default: {DEFAULTS['nemotron_size']})")
+    parser.add_argument("--embeddinggemma-backend", choices=['torch', 'torch-bnb-4bit', 'torch-metal-8bit', 'torch-metal-4bit'], default=DEFAULTS["embeddinggemma_backend"],
+                       help="EmbeddingGemma 2 runtime; install cuda-quant for NF4 or metal-quant for Metal")
+    parser.add_argument("--embeddinggemma-compute-dtype", choices=['auto', 'bfloat16', 'float32'], default=DEFAULTS["embeddinggemma_compute_dtype"],
+                       help="EmbeddingGemma 2 compute precision (auto: BF16 on supported accelerators, FP32 elsewhere; FP16 is unsafe)")
+    parser.add_argument("--embeddinggemma-modalities", choices=['all', 'text', 'text-image', 'text-audio'], default=DEFAULTS["embeddinggemma_modalities"],
+                       help="EmbeddingGemma encoders to load (default: all; text saves memory)")
     parser.add_argument("--qwen-onnx-model-path", type=str, default=DEFAULTS.get("qwen_onnx_model_path"),
                        help="Local ONNX model directory or .onnx file for --qwen-backend=onnx-int8")
     parser.add_argument("--qwen-onnx-provider", type=str, default=DEFAULTS["qwen_onnx_provider"],

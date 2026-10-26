@@ -36,14 +36,19 @@ dependencies = [
     # Keep AMD's native-Windows 2.9.1 wheel valid while the shared lockfile
     # selects Torch 2.11 for CUDA, ROCm, macOS, and CPU environments.
     "torch>=2.9.0,<2.12.0",
-    # MetalConfig requires Transformers 5.15+; Nemotron-3 requires
-    # SentenceTransformers 5.4.1+.
-    "transformers>=5.15.0",
+    # EmbeddingGemma 2 requires its native architecture and ST 6.1 modules.
+    "transformers>=5.19.0",
     # 0.32+ integrates hf-xet into the standard Hub download APIs.
     "huggingface-hub>=0.32.0",
     # 1.5.2 fixes retry delays that could leave Xet downloads hung for hours.
     "hf-xet>=1.5.2,<2.0.0; platform_machine == 'x86_64' or platform_machine == 'amd64' or platform_machine == 'AMD64' or platform_machine == 'arm64' or platform_machine == 'aarch64'",
-    "sentence-transformers>=5.4.1",
+    "sentence-transformers>=6.1.0",
+    # EmbeddingGemma 2's processor imports PIL even for text-only inference.
+    "pillow>=10.0.0",
+    # The Gemma processor also constructs its vision/video preprocessors.
+    "torchvision>=0.24.0",
+    "soundfile>=0.12.1",
+    "scipy>=1.11.0",
     "mxbai-rerank>=0.1.0",
     # System and utilities
     "psutil>=5.9.0",
@@ -56,7 +61,7 @@ cuda-quant = [
     "bitsandbytes>=0.50.1",
 ]
 metal-quant = [
-    "kernels>=0.16.0",
+    "kernels>=0.17.0",
 ]
 onnx = [
     "onnxruntime>=1.18.0",
@@ -79,8 +84,8 @@ Issues = "https://github.com/prolix-oc/bananabread-emb/issues"
 [project.scripts]
 bananabread-emb = "bananabread.main:main"
 
-[tool.setuptools]
-packages = ["bananabread"]
+[tool.setuptools.packages.find]
+include = ["bananabread*"]
 
 [tool.black]
 line-length = 100

@@ -14,6 +14,9 @@ BananaBread downloads a specialized model to your machine and runs a local serve
 | [Qwen3-Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | Embedding + Reranking | One model does both. Sizes: 0.6B, 4B, 8B. |
 | [NVIDIA Llama Nemotron Embed 1B v2](https://huggingface.co/nvidia/llama-nemotron-embed-1b-v2) | Embedding | Multilingual retrieval, 8K-token inputs, and Matryoshka dimensions (384–2048). |
 | [NVIDIA Nemotron-3 Embed](https://huggingface.co/nvidia/Nemotron-3-Embed-1B-BF16) | Embedding | Multilingual retrieval. Official BF16 checkpoints in 1B and 8B sizes, 32K-token inputs, and 2,048-dimensional Matryoshka embeddings. |
+| [Jina Embeddings v5 Omni Small](https://huggingface.co/jinaai/jina-embeddings-v5-omni-small) | Embedding | Multimodal (text, image, audio, video), 1024-dim, ~1.74B params, 32K tokens. |
+| [Jina Embeddings v5 Omni Nano](https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano) | Embedding | Multimodal (text, image, audio, video), 768-dim, ~1.04B params, 8K tokens. |
+| [NVIDIA Llama Nemotron Embed VL 1B v2](https://huggingface.co/nvidia/llama-nemotron-embed-vl-1b-v2) | Embedding | Text + image retrieval, 2048-dim, 10240-token budget with image tiles. |
 | [RoBERTa go_emotions](https://huggingface.co/SamLowe/roberta-base-go_emotions) | Classification | Emotion classification. Loaded on first use. |
 
 ---
@@ -201,6 +204,75 @@ uv run bananabread-emb --embedding-model nemotron-3 --nemotron-size 8B --embeddi
 
 Use the BananaBread `input_type` extension exactly as for the earlier Nemotron model: `document` (the default) uses the model's saved `passage:` prompt, and `query` uses its saved `query:` prompt. Keep the same `embedding_dim` for corpus indexing and queries. The checkpoints require Transformers 5.2+ and SentenceTransformers 5.4.1+, which BananaBread installs automatically.
 
+### Using Google EmbeddingGemma 2
+
+[EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2), released October 6, 2026, is Google's 740M-parameter multimodal embedding model. BananaBread loads its text, image, and audio encoders by default and runs the native architecture without remote code. For a smaller text-only deployment, use `--embeddinggemma-modalities text` (270M parameters); `text-image` and `text-audio` omit one media encoder.
+
+```bash
+# CPU text embeddings; defaults to FP32 compute and 768 dimensions
+uv run bananabread-emb --embedding-model embeddinggemma
+
+# CUDA / ROCm: 4-bit NF4 weights, BF16 compute when the GPU supports it
+uv run --extra cuda-quant bananabread-emb --embedding-model embeddinggemma --embedding-device cuda --embeddinggemma-backend torch-bnb-4bit
+
+# Apple Silicon: 4-bit Metal weights (torch-metal-8bit is also available)
+uv run --extra metal-quant bananabread-emb --embedding-model embeddinggemma --embedding-device mps --embeddinggemma-backend torch-metal-4bit
+
+# Smaller normalized vectors for a vector database
+uv run bananabread-emb --embedding-model embeddinggemma --embedding-dim 256
+
+# Smallest deployment: omit both media encoders
+uv run bananabread-emb --embedding-model embeddinggemma --embeddinggemma-modalities text
+```
+
+The selector defaults to embedding-only mode. Add `--reranking-model mixedbread` if needed. Existing API formats continue to work. On `/v1/embeddings`, the default `input_type="document"` applies the saved `Document` prompt (`title: none | text: `), and `input_type="query"` applies `SearchQuery` (`task: search result | query: `):
+
+```bash
+curl -X POST http://localhost:8008/v1/embeddings \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"How do I bake banana bread?","input_type":"query"}'
+```
+
+Supported dimensions are **128, 256, 512, and 768**, with normalization after truncation. The shared `embedding_dim=1024` default maps to 768 for this selector. Use the same dimensions and model for indexing and querying; switching from another model requires re-embedding the corpus. Inputs are truncated to 8,192 tokens including the prompt.
+
+`embeddinggemma_backend` quantizes model weights; the independent `quant` setting quantizes returned vectors. `embeddinggemma_compute_dtype="auto"` uses BF16 on supported accelerators and FP32 elsewhere. You can explicitly choose `bfloat16` or `float32`; GPUs without native BF16 use FP32. **FP16 is unsafe for this model**, so the FP16 compute option, bitsandbytes INT8 backend (which casts activations to FP16), and `matmul_cast_fp16` override are not used by this adapter. NF4 and Metal keep BF16/FP32 compute, and non-finite outputs are rejected.
+
+BananaBread installs Transformers 5.19+, SentenceTransformers 6.1+, and the image/audio processing dependencies. Quantized backends require the corresponding extra and device; CPU inference uses the standard `torch` backend. `hf_access_token`, `hf_model_revision`, `hf_download_backend`, and `model_storage_dir` also apply to the dedicated loader.
+
+### Multimodal request bodies
+
+`POST /v1/embeddings` accepts structured inputs alongside the existing text format. Each object produces **one vector**, even when it combines text, multiple images, and audio. An array produces one vector per entry, in request order. This shared path works with EmbeddingGemma and compatible models loaded through `--embedding-model hf --hf-model-slug ...`, using SentenceTransformers' declared modality support. `GET /v1/models` lists the active model's `input_modalities`.
+
+```json
+{
+  "input": {
+    "text": "A product photo",
+    "image": "data:image/png;base64,<encoded-image>"
+  },
+  "input_type": "document"
+}
+```
+
+Use an image-only input with `{"input":{"image":"data:image/jpeg;base64,<encoded-image>"}}`. An `image` or `audio` field also accepts a list of bodies, or an object containing raw base64 in `data` and its MIME type in `media_type`:
+
+```json
+{
+  "input": [
+    "Find the sound of a dog barking",
+    {"audio": {"data": "<base64-wav-file>", "media_type": "audio/wav"}},
+    {"image": "data:image/png;base64,<encoded-image>"}
+  ],
+  "input_type": "query"
+}
+```
+
+Audio files (for example WAV or FLAC) are decoded to mono and resampled to the model processor's declared sampling rate when available; EmbeddingGemma uses 16 kHz. Retrieval prefixes apply only to inputs containing text. Media-only inputs receive no text prefix. Model-specific context limits still apply; EmbeddingGemma shares its 8,192-token budget across all modalities.
+
+The JSON extension accepts inline bodies, with limits of 20 MiB per file, 64 MiB of combined media per request, 16 megapixels per image, 360 seconds / 8 channels per audio file, and 32 bodies per modality per input. It does not fetch URLs or read server paths. Malformed or unsupported media returns HTTP 400; invalid JSON/schema shapes return HTTP 422. Video and multipart uploads are not exposed by this extension. Other embedding model processors may require additional dependencies specified by their model cards.
+
+Media affects cache identity and usage limits. Usage uses the model processor's attention mask where available; pure encoders without token masks use 16×16 image patch units or 25 units per audio second. Text keeps the existing token accounting. Logged inputs contain media counts instead of base64 payloads. Float, base64, INT8, and binary vector response options work as before.
+
 ### Using a Hugging Face embedding model
 
 You can run a SentenceTransformers or embedding-capable Hugging Face model by slug. BananaBread resolves and validates the Hub metadata, downloads the snapshot into `model_storage_dir`, then loads the local snapshot with SentenceTransformers:
@@ -235,14 +307,17 @@ All available options (grouped by purpose):
 |---|---|---|
 | `config` | `"config.json"` | Path to the config JSON file, or set `BANANABREAD_CONFIG` |
 | **Model selection** | | |
-| `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, `"nemotron"`, `"nemotron-3"`, or `"hf"` |
-| `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, `"none"`, or `null` (auto: Qwen uses Qwen, either Nemotron selector is disabled, otherwise MixedBread) |
+| `embedding_model` | `"mixedbread"` | `"mixedbread"`, `"qwen"`, `"nemotron"`, `"nemotron-3"`, `"embeddinggemma"`, or `"hf"` |
+| `reranking_model` | `null` | `"mixedbread"`, `"qwen"`, `"none"`, or `null` (auto: Qwen uses Qwen; Nemotron and EmbeddingGemma disable reranking; otherwise MixedBread) |
 | `qwen_size` | `"0.6B"` | Qwen model size: `"0.6B"`, `"4B"`, or `"8B"` |
 | `qwen_backend` | `"torch"` | Qwen runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, `"torch-metal-8bit"`, `"torch-metal-4bit"`, or `"onnx-int8"` |
 | `qwen_compute_dtype` | `"bfloat16"` | Compute dtype for torch Qwen backends: `"bfloat16"`, `"float16"`, or `"float32"` |
 | `nemotron_backend` | `"torch"` | Nemotron runtime: `"torch"`, `"torch-bnb-8bit"`, `"torch-bnb-4bit"`, `"torch-metal-8bit"`, or `"torch-metal-4bit"` |
 | `nemotron_compute_dtype` | `"bfloat16"` | Compute dtype for Nemotron torch backends |
 | `nemotron_size` | `"1B"` | Nemotron-3 checkpoint size: `"1B"` or `"8B"` |
+| `embeddinggemma_backend` | `"torch"` | EmbeddingGemma 2 runtime: `"torch"`, `"torch-bnb-4bit"`, `"torch-metal-4bit"`, or `"torch-metal-8bit"` |
+| `embeddinggemma_compute_dtype` | `"auto"` | `"auto"`, `"bfloat16"`, or `"float32"`; FP16 is unsafe for EmbeddingGemma 2 |
+| `embeddinggemma_modalities` | `"all"` | Encoders to load: `"all"`, `"text"`, `"text-image"`, or `"text-audio"` |
 | `qwen_onnx_model_path` | `null` | Local `.onnx` file or directory for `qwen_backend="onnx-int8"` |
 | `qwen_onnx_provider` | `"CPUExecutionProvider"` | ONNX Runtime execution provider |
 | `qwen_max_length` | `8192` | Maximum token length for Qwen embedding inputs |
@@ -251,7 +326,7 @@ All available options (grouped by purpose):
 | `model_storage_dir` | `"./models"` | Directory used by `/v1/models/download` for explicit model snapshots |
 | `hf_download_backend` | `"auto"` | Hub download backend: `"auto"`, `"xet"`, or `"http"`; applies to supplied and custom models |
 | `hf_model_slug` | `null` | Hugging Face repo id used when `embedding_model="hf"` |
-| `hf_model_revision` | `null` | Optional branch, tag, or commit SHA for `hf_model_slug` |
+| `hf_model_revision` | `null` | Optional branch, tag, or commit SHA for `hf_model_slug` or the dedicated EmbeddingGemma loader |
 | `hf_access_token` | `null` | Optional Hugging Face token for private or gated model metadata/downloads |
 | **Device placement** | | |
 | `embedding_device` | `"cpu"` | `"cpu"`, `"cuda"`, `"cuda:0"`, or `"mps"` |
@@ -259,7 +334,7 @@ All available options (grouped by purpose):
 | **Embedding cache** | | |
 | `cache_limit` | `1024` | Max cache size in MB for each cache (embedding and rerank) |
 | `quant` | `"standard"` | Embedding quantization: `"standard"`, `"int8"`, or `"ubinary"` |
-| `embedding_dim` | `1024` | Output dimensions for MixedBread, Nemotron, and HF models (truncation where supported) |
+| `embedding_dim` | `1024` | Output dimensions for MixedBread, Nemotron, EmbeddingGemma, and HF models (truncation where supported); EmbeddingGemma maps the shared default to 768 |
 | **CPU / threading** | | |
 | `use_cores` | `null` | Limit to N CPU cores (`null` = use all) |
 | `cpu_socket` | `null` | Pin to a specific CPU socket (multi-socket systems) |
@@ -295,7 +370,7 @@ All available options (grouped by purpose):
 
 ## GPU Setup (Optional)
 
-If you have an NVIDIA or AMD GPU, or an Apple Silicon Mac, you can run models on its accelerator. NVIDIA Turing and newer GPUs work out of the box with the Torch 2.11 + CUDA 13 wheel pinned in `uv.lock`. AMD uses PyTorch's ROCm builds — see [AMD GPUs (ROCm)](#amd-gpus-rocm). Apple Silicon uses PyTorch MPS — see [Apple Silicon (Metal)](#apple-silicon-metal). On GPUs without native bfloat16 support, including Turing, BananaBread automatically changes model compute dtype to float16.
+If you have an NVIDIA or AMD GPU, or an Apple Silicon Mac, you can run models on its accelerator. NVIDIA Turing and newer GPUs work out of the box with the Torch 2.11 + CUDA 13 wheel pinned in `uv.lock`. AMD uses PyTorch's ROCm builds — see [AMD GPUs (ROCm)](#amd-gpus-rocm). Apple Silicon uses PyTorch MPS — see [Apple Silicon (Metal)](#apple-silicon-metal). On GPUs without native bfloat16 support, including Turing, BananaBread automatically changes model compute dtype to float16 for Qwen and Nemotron; EmbeddingGemma uses FP32 because FP16 is unsafe for it.
 
 ### Basic GPU usage
 
@@ -309,7 +384,7 @@ uv run bananabread-emb --embedding-device cuda:0 --rerank-device cuda:1
 
 ### Apple Silicon (Metal)
 
-Apple Silicon Macs can run Qwen, Nemotron, and Nemotron-3 on MPS with optional 8-bit or 4-bit affine weight quantization. The Metal kernels keep quantized linear weights on the GPU and are downloaded from Hugging Face on first use. Use 8-bit when embedding quality is the priority; 4-bit saves more unified memory but should be evaluated against your retrieval corpus.
+Apple Silicon Macs can run Qwen, Nemotron, Nemotron-3, and EmbeddingGemma on MPS with optional 8-bit or 4-bit affine weight quantization. The Metal kernels keep quantized linear weights on the GPU and are downloaded from Hugging Face on first use. BananaBread loads version 2 of `kernels-community/mlx-quantization-metal-kernels` with `kernels>=0.17`, avoiding Transformers' older version-1 pin and its upgrade warning. Use 8-bit when embedding quality is the priority; 4-bit saves more unified memory but should be evaluated against your retrieval corpus.
 
 ```bash
 # Qwen 8-bit Metal
@@ -357,11 +432,11 @@ Windows AMD users are no longer stuck on CPU: AMD ships an official **PyTorch on
 ```powershell
 # If you already have a .venv from the NVIDIA/CUDA setup, delete it first.
 uv python pin 3.12                       # AMD's wheels are cp312-only
-uv sync --no-install-package torch       # skip the multi-GB CUDA torch download
+uv sync --no-install-package torch --no-install-package torchvision
 uv run --no-sync python install_rocm_torch.py
 ```
 
-The script installs AMD's ROCm SDK runtime wheels plus the ROCm torch wheel, then verifies the GPU is visible. To double-check yourself:
+The script installs AMD's ROCm SDK runtime wheels plus matching ROCm torch and torchvision wheels, then verifies torchvision imports and the GPU is visible. Re-running it also repairs torchvision in an existing ROCm environment. To double-check yourself:
 
 ```powershell
 uv run --no-sync python -c "import torch; print(torch.__version__, torch.cuda.is_available())"

@@ -21,7 +21,7 @@ Usage:
 
 Windows prerequisites (before running):
     uv python pin 3.12
-    uv sync --no-install-package torch
+    uv sync --no-install-package torch --no-install-package torchvision
     uv run --no-sync python install_rocm_torch.py
 
 References:
@@ -62,6 +62,9 @@ AMD_SDK_URLS = [
 AMD_TORCH_URL = (
     f"{AMD_BASE}/torch-{AMD_WINDOWS_TORCH_VERSION}%2Brocm{AMD_ROCM_VERSION}"
     "-cp312-cp312-win_amd64.whl"
+)
+AMD_TORCHVISION_URL = (
+    f"{AMD_BASE}/torchvision-0.24.1%2Brocm{AMD_ROCM_VERSION}" "-cp312-cp312-win_amd64.whl"
 )
 AMD_REQUIRED_PYTHON = (3, 12)
 
@@ -160,16 +163,17 @@ def verification_code(restore_cuda: bool = False) -> str:
     """Return checks that distinguish a working ROCm build from CUDA."""
     if restore_cuda:
         return (
-            "import sys, torch; v = torch.__version__; "
+            "import sys, torch, torchvision; v = torch.__version__; "
             "assert '+cu130' in v, v; "
             "assert torch.version.cuda, 'CUDA runtime missing'; "
             "print('python', sys.executable, '| torch', v, '| CUDA', torch.version.cuda)"
         )
     return (
-        "import sys, torch; v = torch.__version__; "
+        "import sys, torch, torchvision; v = torch.__version__; "
         "assert '+rocm' in v, v; "
         "assert torch.version.hip, 'ROCm/HIP runtime missing'; "
         "assert torch.cuda.is_available(), 'AMD GPU not visible'; "
+        "assert '+rocm' in torchvision.__version__, 'torchvision is not the ROCm build'; "
         "print('python', sys.executable, '| torch', v, '| HIP', torch.version.hip, "
         "'| GPU', torch.cuda.get_device_name(0))"
     )
@@ -253,7 +257,7 @@ def install_windows(dry_run: bool) -> None:
             "Fix with:\n"
             "  uv python pin 3.12\n"
             "  (delete .venv if it exists)\n"
-            "  uv sync --no-install-package torch\n"
+            "  uv sync --no-install-package torch --no-install-package torchvision\n"
             "  uv run --no-sync python install_rocm_torch.py"
         )
         sys.exit(1)
@@ -261,18 +265,34 @@ def install_windows(dry_run: bool) -> None:
     target_python = project_python()
     version, hip = check_torch(target_python)
     if hip:
-        print(f"ROCm torch already installed in {target_python}: {version}")
-        sys.exit(verify_subprocess(verification_code(), target_python))
+        print(
+            f"ROCm torch already installed in {target_python}: {version}; ensuring matching torchvision"
+        )
 
-    print("Installing AMD ROCm SDK runtime components and torch wheel:")
-    for url in AMD_SDK_URLS + [AMD_TORCH_URL]:
+    print("Installing matching AMD ROCm torch and torchvision wheels:")
+    for url in ([] if hip else AMD_SDK_URLS) + [AMD_TORCH_URL, AMD_TORCHVISION_URL]:
         print(f"  {url}")
 
-    steps = [
-        ["uv", "sync", "--no-install-package", "torch"],
-        ["uv", "pip", "install", "--python", str(target_python), "--no-cache", *AMD_SDK_URLS],
-        ["uv", "pip", "install", "--python", str(target_python), "--no-cache", AMD_TORCH_URL],
-    ]
+    steps = (
+        []
+        if hip
+        else [
+            ["uv", "sync", "--no-install-package", "torch", "--no-install-package", "torchvision"],
+            ["uv", "pip", "install", "--python", str(target_python), "--no-cache", *AMD_SDK_URLS],
+        ]
+    )
+    steps.append(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(target_python),
+            "--no-cache",
+            AMD_TORCH_URL,
+            AMD_TORCHVISION_URL,
+        ]
+    )
 
     if dry_run:
         print("\n[dry-run] Would execute:")

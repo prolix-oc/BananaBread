@@ -43,6 +43,8 @@ from bananabread.auth import (
 )
 import bananabread.models.manager as models_manager
 from bananabread.models.manager import ModelPool
+from bananabread.multimodal import prepare_inputs, count_input_tokens, encode_inputs
+from bananabread.schemas import MultimodalInput
 
 # ----- Threadpool Optimization Configuration -----
 
@@ -452,6 +454,8 @@ async def embedding_endpoint(
     # Handle inputs
     if isinstance(request.input, str):
         inputs = [request.input]
+    elif isinstance(request.input, MultimodalInput):
+        inputs = [request.input]
     elif isinstance(request.input, list):
         if len(request.input) > 0 and isinstance(request.input[0], int):
              raise HTTPException(status_code=400, detail="Token array input is not supported yet, please provide text.")
@@ -459,11 +463,29 @@ async def embedding_endpoint(
              raise HTTPException(status_code=400, detail="Token array input is not supported yet, please provide text.")
         inputs = request.input
     else:
-        raise HTTPException(status_code=400, detail="Input must be a string or list of strings")
+        raise HTTPException(status_code=400, detail="Input must be text or a structured embedding input")
 
     if not inputs:
         raise HTTPException(status_code=400, detail="Input must be provided")
-    prompt_tokens = consume_user_tokens(auth["username"], inputs)
+    model = get_embedding_model_for_token_count()
+    if model is None:
+        raise HTTPException(status_code=503, detail="Embedding model is not loaded")
+    has_media = any(isinstance(item, MultimodalInput) for item in inputs)
+    if has_media:
+        def prepare_and_count():
+            decoded, descriptions = prepare_inputs(inputs, model)
+            return decoded, descriptions, count_input_tokens(decoded, model)
+
+        try:
+            prepared_inputs, log_inputs, prompt_tokens = await run_in_threadpool_with_executor(
+                embedding_executor, prepare_and_count
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        tenant_store.check_and_consume(auth["username"], prompt_tokens)
+    else:
+        prepared_inputs, log_inputs = inputs, inputs
+        prompt_tokens = consume_user_tokens(auth["username"], inputs)
 
     logger.info(
         f"📄 Processing {len(inputs)} {request.input_type} input(s) for embeddings "
@@ -471,7 +493,8 @@ async def embedding_endpoint(
     )
 
     key = get_embedding_cache_key(
-        inputs, request.encoding_format, args.quant, request.input_type
+        [item.model_dump(exclude_none=True) if isinstance(item, MultimodalInput) else item for item in inputs],
+        request.encoding_format, args.quant, request.input_type
     ) if inputs else ""
     cached = embedding_cache.get(auth["username"], key)
     if cached is not None:
@@ -482,21 +505,22 @@ async def embedding_endpoint(
 
     cuda_cache_manager.mark_inference_activity()
 
-    def get_embedding_model_and_encode(inputs):
-        if models_manager.embedding_model_pool:
-            model = models_manager.embedding_model_pool.get_model()
-        else:
-            model = models_manager.embedding_model
-        if request.input_type == "query" and hasattr(model, "encode_query"):
-            return model.encode_query(inputs, show_progress_bar=False)
-        return model.encode(inputs, show_progress_bar=False)
+    def get_embedding_model_and_encode():
+        # Select a pool instance when inference starts on a worker; token
+        # accounting above uses a representative without advancing the pool.
+        inference_model = (
+            models_manager.embedding_model_pool.get_model()
+            if models_manager.embedding_model_pool else models_manager.embedding_model
+        )
+        return encode_inputs(inference_model, prepared_inputs, request.input_type)
 
     t_encode = time.perf_counter()
-    docs_embeddings = await run_in_threadpool_with_executor(
-        embedding_executor,
-        get_embedding_model_and_encode,
-        inputs
-    )
+    try:
+        docs_embeddings = await run_in_threadpool_with_executor(
+            embedding_executor, get_embedding_model_and_encode
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     encode_s = time.perf_counter() - t_encode
 
     t_post = time.perf_counter()
@@ -565,12 +589,12 @@ async def embedding_endpoint(
     log_data = embeddings_list if request.encoding_format != "base64" else ["<base64_encoded_data>"] * len(embeddings_list)
     background_tasks.add_task(
         log_embedding_result,
-        inputs,
+        log_inputs,
         log_data,
         {
             "model": models_manager.embedding_model_name,
             "quantization": args.quant,
-            "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'nemotron', 'nemotron-3', 'hf'} else "native",
+            "embedding_dimensions": args.embedding_dim if args.embedding_model in {'mixedbread', 'nemotron', 'nemotron-3', 'embeddinggemma', 'hf'} else "native",
         },
     )
     background_tasks.add_task(embedding_cache.set, auth["username"], key, result)
@@ -844,13 +868,17 @@ async def health(api_key: str = Depends(get_api_user)):
 
 @app.get("/v1/models")
 async def model(api_key: str = Depends(get_api_user)):
+    current_model = get_embedding_model_for_token_count()
+    supports = getattr(current_model, "supports", lambda modality: modality == "text")
+    input_modalities = [kind for kind in ("text", "image", "audio") if supports(kind)]
     return {"object": "list",
             "data": [
                 {
                     "id": models_manager.embedding_model_name,
                     "object": "model",
                     "created": "176257272",
-                    "owned_by": "urmom"
+                    "owned_by": "urmom",
+                    "input_modalities": input_modalities,
                 }
             ]}
 

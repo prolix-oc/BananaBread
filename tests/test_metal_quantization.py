@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from bananabread import config
 from bananabread.models import nemotron, qwen
 from bananabread.models.metal import enable_batched_metal_linears
+from bananabread.models import metal
 
 
 class FakeModel:
@@ -47,6 +48,38 @@ def test_metal_linear_compatibility_handles_batched_inputs():
 
     assert actual.shape == (3, 5, 64)
     torch.testing.assert_close(actual, expected)
+
+
+def test_metal_requests_kernel_v2_once(monkeypatch):
+    from transformers.integrations import hub_kernels
+
+    calls = []
+    kernel = object()
+    monkeypatch.setattr(hub_kernels, "get_kernel", lambda repo, **kw: calls.append((repo, kw)) or kernel)
+    metal._get_metal_kernel.cache_clear()
+    try:
+        assert metal._get_metal_kernel() is kernel
+        assert metal._get_metal_kernel() is kernel
+        assert calls == [("kernels-community/mlx-quantization-metal-kernels", {"version": 2})]
+    finally:
+        metal._get_metal_kernel.cache_clear()
+
+
+def test_quantized_metal_v2_preserves_batch_shape_and_bias(monkeypatch):
+    from transformers.integrations.metal_quantization import MetalLinear
+
+    class Kernel:
+        def affine_qmm_t(self, inputs, weight, scales, qbiases, group_size, bits):
+            assert inputs.shape == (15, 128)
+            assert bits == 4 and group_size == 64
+            return torch.ones(15, 64)
+
+    monkeypatch.setattr(metal, "_get_metal_kernel", lambda: Kernel())
+    layer = MetalLinear(128, 64, bias=True, bits=4, group_size=64)
+    layer.bias.data.fill_(2)
+    assert enable_batched_metal_linears(layer) == 1
+    output = layer(torch.randn(3, 5, 128))
+    torch.testing.assert_close(output, torch.full((3, 5, 64), 3.0))
 
 
 @pytest.mark.parametrize("bits", [4, 8])

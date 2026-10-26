@@ -24,10 +24,14 @@ EMBEDDING_TAGS = {
 STANDARD_MODEL_REPOS = {
     "mixedbread": "mixedbread-ai/mxbai-embed-large-v1",
     "mxbai-embed-large-v1": "mixedbread-ai/mxbai-embed-large-v1",
+    "embeddinggemma": "google/embeddinggemma-2",
+    "embeddinggemma-2": "google/embeddinggemma-2",
     "nemotron": "nvidia/llama-nemotron-embed-1b-v2",
     "llama-nemotron-embed-1b-v2": "nvidia/llama-nemotron-embed-1b-v2",
     "nemotron-3-embed-1b-bf16": "nvidia/Nemotron-3-Embed-1B-BF16",
-    "nemotron-3-embed-8b-bf16": "nvidia/Nemotron-3-Embed-8B-BF16",
+    "jina-v5-omni-small": "jinaai/jina-embeddings-v5-omni-small",
+    "jina-v5-omni-nano": "jinaai/jina-embeddings-v5-omni-nano",
+    "nemotron-vl": "nvidia/llama-nemotron-embed-vl-1b-v2",
 }
 
 HF_DOWNLOAD_BACKENDS = {"auto", "http", "xet"}

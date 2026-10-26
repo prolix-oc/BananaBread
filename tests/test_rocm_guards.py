@@ -218,3 +218,21 @@ def test_cuda_verification_does_not_require_hip():
 
 def test_windows_amd_wheel_keeps_vendor_torch_version():
     assert "torch-2.9.1%2Brocm7.2.1" in install_rocm_torch.AMD_TORCH_URL
+
+
+def test_windows_amd_repairs_matching_vision_even_with_existing_rocm(monkeypatch, capsys):
+    monkeypatch.setattr(install_rocm_torch, "require_uv", lambda: None)
+    monkeypatch.setattr(install_rocm_torch, "check_torch", lambda *a: ("2.9.1+rocm7.2.1", "7.2.1"))
+    monkeypatch.setattr(
+        install_rocm_torch.sys, "version_info", argparse.Namespace(major=3, minor=12)
+    )
+    install_rocm_torch.install_windows(dry_run=True)
+    output = capsys.readouterr().out
+    assert install_rocm_torch.AMD_TORCHVISION_URL in output
+    assert "uv sync" not in output
+
+
+def test_rocm_verification_detects_incompatible_vision():
+    code = install_rocm_torch.verification_code()
+    assert "torchvision" in code
+    assert "'+rocm' in torchvision.__version__" in code

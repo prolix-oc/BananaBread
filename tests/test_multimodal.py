@@ -257,6 +257,22 @@ def test_endpoint_text_and_base64_output_remain_supported(client):
     assert transport.post("/v1/embeddings", json={"input": [1, 2]}).status_code == 400
 
 
+@pytest.mark.parametrize("route,field", [
+    ("/v1/embeddings", "input"), ("/api/embed", "input"), ("/embedding", "content"),
+])
+def test_all_embedding_routes_obey_shared_batch_limits(client, monkeypatch, route, field):
+    transport, model, charged = client
+    import bananabread.api as api
+
+    monkeypatch.setattr(api.args, "embedding_batch_size", 2)
+    monkeypatch.setattr(api.args, "embedding_batch_max_tokens", 8)
+    texts = ["first", "second", "third", "fourth", "fifth"]
+    response = transport.post(route, json={"model": "test/multimodal", field: texts})
+    assert response.status_code == 200, response.text
+    assert [call[0] for call in model.calls] == [texts[:2], texts[2:4], texts[4:]]
+    assert [call[1]["batch_size"] for call in model.calls] == [2, 2, 1]
+
+
 def test_endpoint_discovers_model_modalities_and_publishes_the_contract(client):
     transport, model, charged = client
     response = transport.get("/v1/models")

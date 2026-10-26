@@ -125,6 +125,14 @@ uv run bananabread-emb --use-cores 8
 uv run bananabread-emb --log-level DEBUG
 ```
 
+### Embedding inference memory
+
+All embedding models and OpenAI, Ollama, and llama.cpp embedding routes split requests into inference batches of at most **8 inputs** and **8,192 padded tokens** by default. Configure these limits with `--embedding-batch-size` / `--embedding-batch-max-tokens`, or `embedding_batch_size` / `embedding_batch_max_tokens` in `config.json`. Both must be positive integers. The planner measures each text with its tokenizer or processor, including retrieval prompts, truncation, and padding. Media and models without a measurable tokenizer run individually.
+
+The token budget limits batching, not document length: an input over budget runs alone with the model's existing context limit. Response order is preserved. Smaller limits reduce activation memory even with quantized weights; concurrent model instances each have their own budget.
+
+Compatible Transformers encoders use a compact, broadcastable key padding mask for plain bidirectional SDPA attention. Causal, sliding-window, packed, and other custom patterns retain the standard mask implementation. This optimization applies by capability across embedding models, including their multimodal backbones, and does not require FlashAttention.
+
 ### Using Qwen models
 
 Qwen can handle both embedding and reranking with a single model, which saves memory:
@@ -239,7 +247,7 @@ On `POST /v1/embeddings`, `input_type="document"` applies the checkpoint's saved
 }
 ```
 
-Each entry produces one vector. Matryoshka truncation supports any positive dimension up to the selected model's native size, with L2 normalization after truncation. Keep the model and dimensions consistent between indexing and querying. BananaBread's existing Transformers 5.19+ and SentenceTransformers 6.1+ dependencies support this native pipeline. The models use the [OpenMDW 1.1 license](https://openmdw.ai).
+Each entry produces one vector. Matryoshka truncation supports any positive dimension up to the selected model's native size, with L2 normalization after truncation. Keep the model and dimensions consistent between indexing and querying. BananaBread uses Transformers 5.20.0 and SentenceTransformers 6.1+ for this native pipeline, including the Transformers fixes for FlashAttention 2 image inputs. The models use the [OpenMDW 1.1 license](https://openmdw.ai).
 
 ### Using Google EmbeddingGemma 2
 
@@ -275,7 +283,7 @@ Supported dimensions are **128, 256, 512, and 768**, with normalization after tr
 
 `embeddinggemma_backend` quantizes model weights; the independent `quant` setting quantizes returned vectors. `embeddinggemma_compute_dtype="auto"` uses BF16 on supported accelerators and FP32 elsewhere. You can explicitly choose `bfloat16` or `float32`; GPUs without native BF16 use FP32. **FP16 is unsafe for this model**, so the FP16 compute option, bitsandbytes INT8 backend (which casts activations to FP16), and `matmul_cast_fp16` override are not used by this adapter. NF4 and Metal keep BF16/FP32 compute, and non-finite outputs are rejected.
 
-BananaBread installs Transformers 5.19+, SentenceTransformers 6.1+, and the image/audio processing dependencies. Quantized backends require the corresponding extra and device; CPU inference uses the standard `torch` backend. `hf_access_token`, `hf_model_revision`, `hf_download_backend`, and `model_storage_dir` also apply to the dedicated loader.
+BananaBread installs Transformers 5.20.0, SentenceTransformers 6.1+, and the image/audio processing dependencies. Quantized backends require the corresponding extra and device; CPU inference uses the standard `torch` backend. `hf_access_token`, `hf_model_revision`, `hf_download_backend`, and `model_storage_dir` also apply to the dedicated loader.
 
 ### Multimodal request bodies
 
@@ -372,6 +380,9 @@ All available options (grouped by purpose):
 | `cache_limit` | `1024` | Max cache size in MB for each cache (embedding and rerank) |
 | `quant` | `"standard"` | Embedding quantization: `"standard"`, `"int8"`, or `"ubinary"` |
 | `embedding_dim` | `1024` | Output dimensions for MixedBread, Nemotron, EmbeddingGemma, and HF models (truncation where supported); EmbeddingGemma maps the shared default to 768 |
+| `embedding_batch_size` | `8` | Maximum inputs per embedding inference batch, for every model |
+| `embedding_batch_max_tokens` | `8192` | Maximum padded tokens per batch; longer individual inputs run alone |
+| `embedding_flash_attention` | `false` | Prefer FlashAttention 2 on compatible CUDA embedding backbones; requires `flash_attn` |
 | **CPU / threading** | | |
 | `use_cores` | `null` | Limit to N CPU cores (`null` = use all) |
 | `cpu_socket` | `null` | Pin to a specific CPU socket (multi-socket systems) |
@@ -527,8 +538,14 @@ pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases
 Once installed, enable it:
 
 ```bash
+# Any compatible embedding model, including Nemotron-3.5
+uv run bananabread-emb --embedding-model nemotron-3.5 --embedding-device cuda --embedding-flash-attention
+
+# Existing Qwen-specific flag remains available
 uv run bananabread-emb --embedding-model qwen --qwen-flash-attention --embedding-device cuda
 ```
+
+The shared `--embedding-flash-attention` option selects FlashAttention 2 per compatible CUDA backbone using FP16 or BF16. Unsupported runtimes or backbones retain their supported attention implementation, including compact SDPA masks. Transformers is pinned to **5.20.0** to include the Nemotron-3.5 image-input fixes. Installing Transformers alone does not install `flash_attn`; run the installer above in the same environment. CPU, Apple Silicon, and ROCm continue to use their supported backends.
 
 At startup, BananaBread only enables Flash Attention 2 when `flash_attn` imports in the same Python environment, Transformers reports FA2 support, CUDA is available, the target device is not CPU, and Qwen compute dtype is `float16` or `bfloat16`. If any check fails, BananaBread logs the reason and falls back to the default attention implementation.
 

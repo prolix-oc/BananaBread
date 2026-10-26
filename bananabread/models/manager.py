@@ -24,7 +24,8 @@ from bananabread.models.qwen import QwenRawModel, load_qwen_model
 from bananabread.models.jina_omni import JINA_OMNI_MODEL_REPOS, JinaOmniEmbeddingModel
 from bananabread.models.nemotron_vl import NEMOTRON_VL_MODEL_REPO, NemotronVLEmbeddingModel
 from bananabread.models.harrier import HARRIER_MODEL_REPO, HarrierEmbeddingModel
-from bananabread.multimodal import SentenceTransformerAdapter
+from bananabread.multimodal import SentenceTransformerAdapter, encode_inputs
+from bananabread.models.inference import configure_embedding_attention
 
 # Global model references
 embedding_model = None
@@ -220,7 +221,7 @@ def warmup_model(model, model_type: str, model_name: str, num_samples: int = 3):
                     
                     if hasattr(model, 'encode'):
                         # SentenceTransformer or QwenRawModel
-                        _ = model.encode([dummy_texts[i % len(dummy_texts)]], show_progress_bar=False)
+                        _ = encode_inputs(model, [dummy_texts[i % len(dummy_texts)]], "document")
                     else:
                         logger.warning(f"⚠️  Model does not have encode method, skipping warmup")
                         return
@@ -474,6 +475,7 @@ def load_embedding_model_instance():
             device=args.embedding_device
         )
     
+    configure_embedding_attention(model, prefer_flash=args.embedding_flash_attention)
     # Apply torch.compile() if enabled
     model = compile_model_if_enabled(model, f"Embedding-{args.embedding_model}")
     
@@ -632,6 +634,7 @@ def initialize_models():
             embedding_model_name = "mixedbread-ai/mxbai-embed-large-v1"
             embedding_model = SentenceTransformer(embedding_model_name, truncate_dim=args.embedding_dim, device=args.embedding_device)
         
+        configure_embedding_attention(embedding_model, prefer_flash=args.embedding_flash_attention)
         # Apply compile to single instance
         embedding_model = compile_model_if_enabled(embedding_model, f"Embedding-{args.embedding_model}")
         embedding_model_pool = None
@@ -730,7 +733,7 @@ def _compute_calibration_embeddings(model):
     logger.info("🔧 Computing int8 calibration embeddings from dummy texts...")
     try:
         if hasattr(model, 'encode'):
-            emb = model.encode(_CALIBRATION_TEXTS, show_progress_bar=False)
+            emb = encode_inputs(model, _CALIBRATION_TEXTS, "document")
         elif hasattr(model, 'get_embeddings'):
             emb = model.get_embeddings(_CALIBRATION_TEXTS)
         else:

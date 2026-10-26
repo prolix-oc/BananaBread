@@ -158,6 +158,9 @@ DEFAULTS = {
     "log_level": "INFO",
     "quant": "standard",
     "embedding_dim": 1024,
+    "embedding_batch_size": 8,
+    "embedding_batch_max_tokens": 8192,
+    "embedding_flash_attention": False,
     "cuda_cache_ttl": 300,
     "cuda_min_clear_interval": 60,
     "cuda_memory_threshold": 80,
@@ -386,6 +389,12 @@ def validate_args(parsed_args):
 
     _require_requested_accelerators(parsed_args)
 
+    for key in ("embedding_batch_size", "embedding_batch_max_tokens"):
+        value = getattr(parsed_args, key, DEFAULTS[key])
+        if type(value) is not int or value < 1:
+            raise ValueError(f"{key} must be a positive integer")
+        setattr(parsed_args, key, value)
+
     if parsed_args.embedding_model == "embeddinggemma":
         # The shared 1024d default belongs to MixedBread; Gemma's native size is 768d.
         if parsed_args.embedding_dim == DEFAULTS["embedding_dim"]:
@@ -540,7 +549,13 @@ def parse_args():
     parser.add_argument("--embedding-dim", type=int, default=DEFAULTS["embedding_dim"],
                        help=f"Embedding dimensions to truncate to (default: {DEFAULTS['embedding_dim']})")
 
-    # Embedding logging argument
+    # Embedding inference and logging arguments
+    parser.add_argument("--embedding-batch-size", type=int, default=DEFAULTS["embedding_batch_size"],
+                       help="Maximum inputs per embedding inference batch (default: 8)")
+    parser.add_argument("--embedding-batch-max-tokens", type=int, default=DEFAULTS["embedding_batch_max_tokens"],
+                       help="Maximum padded tokens per embedding batch; longer inputs run alone (default: 8192)")
+    parser.add_argument("--embedding-flash-attention", action='store_true', default=DEFAULTS["embedding_flash_attention"],
+                       help="Prefer FlashAttention 2 for compatible embedding encoders (requires flash_attn)")
     parser.add_argument("--log-embeddings", action='store_true', default=DEFAULTS.get("log_embeddings"),
                        help="Enable logging of embedding queries and results to embeddings.log")
 

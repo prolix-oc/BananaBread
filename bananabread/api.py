@@ -706,7 +706,7 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest, auth: dict
             model = models_manager.embedding_model_pool.get_model()
         else:
             model = models_manager.embedding_model
-        return model.encode(inputs, show_progress_bar=False)
+        return encode_inputs(model, inputs, "document")
     
     docs_embeddings = await run_in_threadpool_with_executor(
         embedding_executor,
@@ -760,7 +760,7 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest, auth: d
                 model = models_manager.embedding_model_pool.get_model()
             else:
                 model = models_manager.embedding_model
-            return model.encode(inputs, show_progress_bar=False)
+            return encode_inputs(model, inputs, "document")
         
         docs_embeddings = await run_in_threadpool_with_executor(
             embedding_executor,

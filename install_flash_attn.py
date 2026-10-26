@@ -207,7 +207,7 @@ def main():
         verify_result = verify_flash_attn_import()
         if verify_result.returncode == 0:
             print("\nFlash Attention 2 installed and import-verified successfully!")
-            print("Enable it with: --qwen-flash-attention")
+            print("Enable it with: --embedding-flash-attention (or --qwen-flash-attention)")
         else:
             print("\nInstallation completed, but flash_attn failed to import in this environment.")
             print("The wheel may not match your Python, PyTorch, CUDA, or platform runtime.")

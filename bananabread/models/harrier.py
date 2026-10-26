@@ -126,6 +126,8 @@ class HarrierEmbeddingModel:
             "quantization_config": quantization_config,
         }
 
+    batch_prompt_names = {"document": None, "query": None}
+
     def encode(self, texts: Sequence[str], *args: Any, **kwargs: Any) -> Any:
         with self.tokenizer_lock:
             return self.model.encode(texts, *args, **kwargs)

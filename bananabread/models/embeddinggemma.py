@@ -129,6 +129,8 @@ class EmbeddingGemmaModel:
             modality
         )
 
+    batch_prompt_names = {"document": "Document", "query": "SearchQuery"}
+
     def _encode(self, texts: Sequence[Any], prompt_name: str, **kwargs: Any) -> Any:
         # Task prefixes apply to text only. The shared dispatcher separates
         # heterogeneous inputs, so media-only batches can explicitly disable prompts.

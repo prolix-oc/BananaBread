@@ -11,6 +11,7 @@ from bananabread import config
 from bananabread.hf_models import resolve_model_repo_id
 from bananabread.models import manager, nemotron
 from bananabread.models.nemotron35 import Nemotron35EmbeddingModel
+from bananabread.models.inference import COMPACT_SDPA, configure_embedding_attention
 from bananabread.multimodal import encode_inputs
 
 
@@ -301,6 +302,8 @@ def test_native_mistral3_text_image_pipeline_without_downloads(tmp_path):
     snapshot = tmp_path / "sentence-transformer"
     saved.save(str(snapshot))
     model = Nemotron35EmbeddingModel(str(snapshot), truncate_dim=16, compute_dtype="float32")
+    configure_embedding_attention(model)
+    assert model.model[0].auto_model.config.text_config._attn_implementation == COMPACT_SDPA
     image = Image.new("RGB", (32, 32), "red")
     inputs = ["hello", image, {"text": "hello", "image": image}]
     output = encode_inputs(model, inputs, "document")

@@ -28,6 +28,9 @@ _DOCUMENT_PREFIX = "passage: "
 class NemotronEmbeddingModel:
     """SentenceTransformers adapter with NVIDIA's retrieval prompts applied."""
 
+    batch_text_prefixes = {"document": _DOCUMENT_PREFIX, "query": _QUERY_PREFIX}
+    batch_prompt_names = {"document": None, "query": None}
+
     def __init__(
         self,
         model_path: str,
@@ -159,6 +162,9 @@ class Nemotron3EmbeddingModel(NemotronEmbeddingModel):
     normalization metadata; use the corresponding SentenceTransformers APIs
     when available so those settings remain authoritative.
     """
+
+    batch_text_prefixes = {}
+    batch_prompt_names = {"document": "document", "query": "query"}
 
     def __init__(
         self,

@@ -17,6 +17,8 @@ import torch
 from PIL import Image, UnidentifiedImageError
 
 from bananabread.schemas import MediaBody, MultimodalInput
+from bananabread.config import args
+from bananabread.models.inference import encode_in_batches
 from bananabread.tenancy import count_text_tokens
 
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
@@ -187,24 +189,17 @@ def count_input_tokens(inputs: list[Any], model: Any) -> int:
 
 
 def encode_inputs(model: Any, inputs: list[Any], input_type: str) -> Any:
-    encode = getattr(model, "encode_query", None) if input_type == "query" else None
-    encode = encode or model.encode
     with getattr(model, "tokenizer_lock", nullcontext()):
-        if all(isinstance(item, str) for item in inputs):
-            return encode(inputs, show_progress_bar=False)
-        # Encode heterogeneous items individually: ST processors generally batch
-        # only one modality/layout at a time. Preserve response order exactly.
-        outputs = []
-        for item in inputs:
-            output = encode([item], show_progress_bar=False)
-            if isinstance(output, torch.Tensor):
-                output = output.detach().float().cpu().numpy()
-            outputs.append(output)
-        return np.concatenate(outputs, axis=0)
+        return encode_in_batches(
+            model, inputs, input_type,
+            batch_size=args.embedding_batch_size, max_tokens=args.embedding_batch_max_tokens,
+        )
 
 
 class SentenceTransformerAdapter:
     """Expose saved retrieval prompts and shared tokenizer locking for HF models."""
+
+    batch_prompt_names = {"document": "document", "query": "query"}
 
     def __init__(self, model: Any):
         self.model = model

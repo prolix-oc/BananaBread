@@ -27,6 +27,9 @@
     "cache_limit": 1024,
     "quant": "standard",
     "embedding_dim": 1024,
+    "embedding_batch_size": 8,
+    "embedding_batch_max_tokens": 8192,
+    "embedding_flash_attention": false,
 
     "use_cores": null,
     "cpu_socket": null,

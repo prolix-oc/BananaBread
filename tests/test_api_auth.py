@@ -94,6 +94,8 @@ USER_ROUTES = [
     ("GET", "/v1/health", None),
     ("GET", "/v1/models", None),
     ("POST", "/v1/embeddings", {"input": "hello"}),
+    ("POST", "/v0/embeddings", {"model": "test/auth", "input": "hello"}),
+    ("POST", "/api/v0/embeddings", {"model": "test/auth", "input": "hello"}),
     ("POST", "/api/embeddings", {"model": "test/auth", "prompt": "hello"}),
     ("POST", "/api/embed", {"model": "test/auth", "input": "hello"}),
     ("POST", "/embedding", {"content": "hello"}),
@@ -121,6 +123,42 @@ def test_disabled_auth_accepts_missing_and_placeholder_keys(
     for headers in ({}, {"Authorization": "Basic ignored"}, {"Authorization": "Bearer placeholder"}):
         response = client.request(method, route, json=body, headers=headers)
         assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("route", ["/v0/embeddings", "/api/v0/embeddings"])
+@pytest.mark.parametrize("inputs", ["hello world", ["hello", "world"]])
+def test_lmstudio_response_contract_and_shared_cache(api_client, route, inputs):
+    api, client, store, model = api_client
+    payload = {"model": "client-model-alias", "input": inputs}
+    headers = {"Authorization": "Bearer alice-key"}
+    baseline = client.post("/v1/embeddings", json=payload, headers=headers)
+    inference_calls = model.calls
+    response = client.post(route, json=payload, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json() == baseline.json()
+    count = 1 if isinstance(inputs, str) else len(inputs)
+    assert response.json() == {
+        "object": "list",
+        "data": [
+            {"object": "embedding", "embedding": [1.0, 0.0], "index": index}
+            for index in range(count)
+        ],
+        "model": "test/auth",
+        "usage": {"prompt_tokens": 2, "total_tokens": 2},
+    }
+    assert inference_calls > 0
+    assert model.calls == inference_calls
+    assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 4
+
+
+@pytest.mark.parametrize("route", ["/v0/embeddings", "/api/v0/embeddings"])
+def test_lmstudio_requests_enforce_shared_token_limits(api_client, route):
+    api, client, store, model = api_client
+    store.update_config(default_limits={"daily": 1})
+    headers = {"Authorization": "Bearer alice-key"}
+    payload = {"model": "test/auth", "input": "hello"}
+    assert client.post(route, json=payload, headers=headers).status_code == 200
+    assert client.post(route, json=payload, headers=headers).status_code == 429
 
 
 def test_anonymous_requests_share_usage_and_cache(api_client, monkeypatch):

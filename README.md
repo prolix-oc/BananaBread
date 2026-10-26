@@ -628,6 +628,8 @@ Set `"disable_api_key_auth": true` in `config.json` (or use `--disable-api-key-a
 | Endpoint | Auth | Format | Description |
 |---|---|---|---|
 | `POST /v1/embeddings` | User key | OpenAI | Generate embeddings (single or batch) |
+| `POST /api/v0/embeddings` | User key | LM Studio | LM Studio v0-compatible embeddings |
+| `POST /v0/embeddings` | User key | LM Studio | Short alias for `/api/v0/embeddings` |
 | `POST /v1/rerank` | User key | Custom | Rerank documents against a query |
 | `POST /v1/classify` | Management key | Custom | Classify text by emotion |
 | `POST /v1/models/download` | Management key | Custom | Resolve, inspect, and optionally download a Hugging Face model snapshot |
@@ -672,6 +674,22 @@ curl -X POST http://localhost:8008/v1/embeddings \
     "model": "mixedbread-ai/mxbai-embed-large-v1"
   }'
 ```
+
+#### Embeddings (LM Studio v0 format)
+
+[LM Studio's documented endpoint](https://lmstudio.ai/docs/developer/rest/endpoints#post-apiv0embeddings) is `/api/v0/embeddings`. BananaBread also accepts `/v0/embeddings` as a short alias. Both use the same embedding handler as `/v1/embeddings`:
+
+```bash
+curl -X POST http://localhost:8008/api/v0/embeddings \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nvidia/Nemotron-3.5-Embed-1B-BF16",
+    "input": "Some text to embed"
+  }'
+```
+
+The response contains `object: "list"`, a `data` array of indexed embedding vectors, the loaded `model` identifier, and `usage.prompt_tokens` / `usage.total_tokens`. The `model` request field is accepted for compatibility; BananaBread uses its configured model. A string or array of strings is supported, along with the existing `encoding_format`, `input_type`, and structured image/audio extensions. Authentication, token limits, batching, and caching follow the same settings as `/v1/embeddings`; omit the Authorization header when `disable_api_key_auth` is enabled.
 
 #### Reranking
 ```bash
@@ -763,6 +781,7 @@ BananaBread is designed to impersonate other servers. It responds to model listi
 
 - **SillyTavern**: Point it at `http://localhost:8008` as a llama.cpp backend. BananaBread responds to the models endpoint, so SillyTavern will treat it as a full llama.cpp instance.
 - **OpenAI-compatible clients**: Use the `/v1/embeddings` endpoint with your API key.
+- **LM Studio-compatible clients**: Use `/api/v0/embeddings` or `/v0/embeddings` with the same request body as `/v1/embeddings`.
 - **Ollama-compatible clients**: Use `/api/embeddings` or `/api/embed` with your API key, or enable `disable_api_key_auth` for clients that cannot send one.
 
 ---

@@ -603,6 +603,16 @@ async def embedding_endpoint(
     )
     return result
 
+@app.post("/v0/embeddings", tags=["LM Studio"])
+@app.post("/api/v0/embeddings", tags=["LM Studio"])
+async def lmstudio_embeddings_endpoint(
+    request: EmbeddingRequest,
+    background_tasks: BackgroundTasks,
+    auth: dict = Depends(get_api_user),
+):
+    """LM Studio v0 uses the same embedding response envelope as OpenAI."""
+    return await embedding_endpoint(request, background_tasks, auth)
+
 @app.post("/v1/classify")
 async def classify_endpoint(request: ClassificationRequest, api_key: str = Depends(get_management_key)):
     clf = models_manager.get_classifier()
@@ -883,6 +893,8 @@ async def model(api_key: str = Depends(get_api_user)):
 async def read_root():
     endpoints = {
         "embeddings": "/v1/embeddings",
+        "lmstudio_embeddings": "/api/v0/embeddings",
+        "lmstudio_embeddings_alias": "/v0/embeddings",
         "classify": "/v1/classify",
         "management_panel": "/management",
         "management_config": "/v1/management/config",

@@ -213,10 +213,11 @@ def client(monkeypatch, tmp_path):
     api.app.dependency_overrides.clear()
 
 
-def test_endpoint_image_body_order_usage_and_cache(client):
+@pytest.mark.parametrize("route", ["/v1/embeddings", "/v0/embeddings", "/api/v0/embeddings"])
+def test_endpoint_image_body_order_usage_and_cache(client, route):
     transport, model, charged = client
     payload = {"input": ["a text", {"image": image_body()}], "input_type": "query"}
-    response = transport.post("/v1/embeddings", json=payload)
+    response = transport.post(route, json=payload)
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["model"] == "test/multimodal"
@@ -224,10 +225,10 @@ def test_endpoint_image_body_order_usage_and_cache(client):
     assert data["usage"]["prompt_tokens"] == 5
     assert charged == [5]
     assert all(call[1]["query"] for call in model.calls)
-    assert transport.post("/v1/embeddings", json=payload).status_code == 200
+    assert transport.post(route, json=payload).status_code == 200
     assert len(model.calls) == 2
     changed = {"input": {"image": image_body("blue")}}
-    assert transport.post("/v1/embeddings", json=changed).status_code == 200
+    assert transport.post(route, json=changed).status_code == 200
     assert len(model.calls) == 3
 
 
@@ -244,21 +245,23 @@ def test_endpoint_rejects_unsupported_or_invalid_media_without_charging(client):
     assert charged == []
 
 
-def test_endpoint_text_and_base64_output_remain_supported(client):
+@pytest.mark.parametrize("route", ["/v1/embeddings", "/v0/embeddings", "/api/v0/embeddings"])
+def test_endpoint_text_and_base64_output_remain_supported(client, route):
     transport, model, charged = client
     response = transport.post(
-        "/v1/embeddings", json={"input": "hello", "encoding_format": "base64"}
+        route, json={"input": "hello", "encoding_format": "base64"}
     )
     assert response.status_code == 200
     output = np.frombuffer(
         base64.b64decode(response.json()["data"][0]["embedding"]), dtype=np.float32
     )
     np.testing.assert_array_equal(output, [1, 0])
-    assert transport.post("/v1/embeddings", json={"input": [1, 2]}).status_code == 400
+    assert transport.post(route, json={"input": [1, 2]}).status_code == 400
 
 
 @pytest.mark.parametrize("route,field", [
     ("/v1/embeddings", "input"), ("/api/embed", "input"), ("/embedding", "content"),
+    ("/v0/embeddings", "input"), ("/api/v0/embeddings", "input"),
 ])
 def test_all_embedding_routes_obey_shared_batch_limits(client, monkeypatch, route, field):
     transport, model, charged = client
@@ -280,6 +283,8 @@ def test_endpoint_discovers_model_modalities_and_publishes_the_contract(client):
     schema = transport.get("/openapi.json").json()
     assert "MultimodalInput" in schema["components"]["schemas"]
     assert "MediaBody" in schema["components"]["schemas"]
+    for route in ("/v0/embeddings", "/api/v0/embeddings"):
+        assert "post" in schema["paths"][route]
 
 
 def test_endpoint_selects_pool_instance_on_the_inference_worker(client, monkeypatch):

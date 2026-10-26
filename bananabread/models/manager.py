@@ -18,6 +18,7 @@ from bananabread.models.nemotron import (
     Nemotron3EmbeddingModel,
     NemotronEmbeddingModel,
 )
+from bananabread.models.embeddinggemma import EMBEDDINGGEMMA_MODEL_REPO, EmbeddingGemmaModel
 from bananabread.models.qwen import QwenRawModel, load_qwen_model
 from bananabread.models.jina_omni import JINA_OMNI_MODEL_REPOS, JinaOmniEmbeddingModel
 from bananabread.models.nemotron_vl import NEMOTRON_VL_MODEL_REPO, NemotronVLEmbeddingModel

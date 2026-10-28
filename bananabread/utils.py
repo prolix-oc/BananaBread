@@ -4,6 +4,8 @@ import json
 import datetime
 import psutil
 import asyncio
+from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Optional, Any
 
 from tqdm.auto import tqdm as auto_tqdm
@@ -163,10 +165,50 @@ def get_model_memory_usage(model):
 
 # ----- Optimized Threadpool Execution Functions -----
 
-async def run_in_threadpool_with_executor(executor, func, *args, **kwargs):
+@dataclass
+class ExecutionTiming:
+    """Wall times for one worker call; run_s includes any measured lock wait."""
+
+    queue_s: float = 0.0
+    run_s: float = 0.0
+    lock_wait_s: float = 0.0
+
+    @property
+    def work_s(self) -> float:
+        return max(0.0, self.run_s - self.lock_wait_s)
+
+
+@contextmanager
+def timed_lock(lock, timing: ExecutionTiming | None = None):
+    """Acquire a synchronous lock on a worker, optionally recording contention."""
+    if lock is None:
+        yield
+        return
+    started = time.perf_counter()
+    with lock:
+        if timing is not None:
+            timing.lock_wait_s += time.perf_counter() - started
+        yield
+
+
+async def run_in_threadpool_with_executor(
+    executor, func, *args, timing: ExecutionTiming | None = None, **kwargs
+):
     """
     Run a function in a specific threadpool executor for better CPU utilization.
     This allows us to dedicate threads to specific types of operations.
     """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(executor, func, *args, **kwargs)
+    loop = asyncio.get_running_loop()
+    submitted = time.perf_counter()
+
+    def run():
+        started = time.perf_counter()
+        if timing is not None:
+            timing.queue_s = started - submitted
+        try:
+            return func(*args, **kwargs)
+        finally:
+            if timing is not None:
+                timing.run_s = time.perf_counter() - started
+
+    return await loop.run_in_executor(executor, run)

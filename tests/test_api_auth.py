@@ -3,6 +3,8 @@
 import importlib
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
@@ -103,6 +105,103 @@ USER_ROUTES = [
     ("POST", "/embedding", {"content": "hello"}),
     ("POST", "/v1/rerank", {"query": "hello", "documents": ["world"]}),
 ]
+
+
+@pytest.mark.parametrize(("route", "body"), [
+    (route, body) for method, route, body in USER_ROUTES if method == "POST" and route != "/api/show"
+])
+def test_tokenizer_contention_does_not_block_http(api_client, monkeypatch, route, body):
+    api, client, store, model = api_client
+    encoding = threading.Event()
+    release_encode = threading.Event()
+    counting_waits = threading.Event()
+    lock = threading.RLock()
+
+    class ObservedLock:
+        def __enter__(self):
+            if not lock.acquire(blocking=False):
+                counting_waits.set()
+                assert lock.acquire(timeout=5), "tokenizer lock was never released"
+            return self
+
+        def __exit__(self, *exc):
+            lock.release()
+
+    original_encode = model.encode
+
+    def slow_encode(inputs, **kwargs):
+        if inputs == ["held"]:
+            encoding.set()
+            assert release_encode.wait(5), "test did not release inference"
+        return original_encode(inputs, **kwargs)
+
+    monkeypatch.setattr(model, "tokenizer_lock", ObservedLock(), raising=False)
+    monkeypatch.setattr(model, "encode", slow_encode)
+    headers = {"Authorization": "Bearer alice-key"}
+    with ThreadPoolExecutor(max_workers=3) as clients:
+        first = clients.submit(client.post, "/v1/embeddings", json={"input": "held"}, headers=headers)
+        try:
+            assert encoding.wait(2), "first request did not reach inference"
+            retry = clients.submit(client.post, route, json=body, headers=headers)
+            assert counting_waits.wait(2), "second request did not attempt token accounting"
+            health = clients.submit(client.get, "/v1/health", headers=headers)
+            # This must finish while inference still owns the tokenizer lock.
+            assert health.result(timeout=1).status_code == 200
+        finally:
+            release_encode.set()
+        assert first.result(timeout=2).status_code == 200
+        response = retry.result(timeout=2)
+        assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("inputs", ["hello", {"text": "hello"}])
+def test_tenant_accounting_does_not_block_http(api_client, monkeypatch, inputs):
+    api, client, store, model = api_client
+    accounting = threading.Event()
+    release_accounting = threading.Event()
+    original_consume = store.check_and_consume
+
+    def slow_consume(username, tokens):
+        accounting.set()
+        assert release_accounting.wait(5), "test did not release accounting"
+        return original_consume(username, tokens)
+
+    monkeypatch.setattr(store, "check_and_consume", slow_consume)
+    headers = {"Authorization": "Bearer alice-key"}
+    with ThreadPoolExecutor(max_workers=2) as clients:
+        request = clients.submit(client.post, "/v1/embeddings", json={"input": inputs}, headers=headers)
+        try:
+            assert accounting.wait(2)
+            health = clients.submit(client.get, "/v1/health", headers=headers)
+            assert health.result(timeout=1).status_code == 200
+        finally:
+            release_accounting.set()
+        response = request.result(timeout=2)
+        assert response.status_code == 200, response.text
+        assert response.json()["usage"]["prompt_tokens"] == 1
+
+
+def test_concurrent_accounting_preserves_token_limit(api_client, monkeypatch):
+    api, client, store, model = api_client
+    store.update_config(default_limits={"daily": 1})
+    both_counted = threading.Barrier(2)
+    original_count = api.count_usage_tokens
+
+    def count_together(*args, **kwargs):
+        tokens = original_count(*args, **kwargs)
+        both_counted.wait(timeout=3)
+        return tokens
+
+    monkeypatch.setattr(api, "count_usage_tokens", count_together)
+    headers = {"Authorization": "Bearer alice-key"}
+    with ThreadPoolExecutor(max_workers=2) as clients:
+        requests = [
+            clients.submit(client.post, "/v1/embeddings", json={"input": "hello"}, headers=headers)
+            for _ in range(2)
+        ]
+        assert sorted(request.result(timeout=5).status_code for request in requests) == [200, 429]
+    assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 1
+    assert model.calls == 1
 
 
 @pytest.mark.parametrize(("method", "route", "body"), USER_ROUTES)

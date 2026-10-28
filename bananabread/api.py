@@ -34,7 +34,9 @@ from bananabread.utils import (
     log_embedding_result,
     run_in_threadpool_with_executor,
     get_process_memory_usage,
-    get_model_memory_usage
+    get_model_memory_usage,
+    ExecutionTiming,
+    timed_lock,
 )
 from bananabread.hf_models import download_hf_model, inspect_hf_model, resolve_model_repo_id
 from bananabread.tenancy import TenantStore, count_text_tokens
@@ -234,19 +236,27 @@ def get_embedding_model_for_token_count():
 def get_embedding_tokenizer():
     return getattr(get_embedding_model_for_token_count(), "tokenizer", None)
 
-def count_usage_tokens(texts: List[str]) -> int:
+def count_usage_tokens(texts: List[str], *, timing: ExecutionTiming | None = None) -> int:
     model = get_embedding_model_for_token_count()
     tokenizer = getattr(model, "tokenizer", None)
     tokenizer_lock = getattr(model, "tokenizer_lock", None)
-    if tokenizer_lock is None:
-        return count_text_tokens(texts, tokenizer)
-    with tokenizer_lock:
+    with timed_lock(tokenizer_lock, timing):
         return count_text_tokens(texts, tokenizer)
 
-def consume_user_tokens(username: str, texts: List[str]) -> int:
-    tokens = count_usage_tokens(texts)
-    tenant_store.check_and_consume(username, tokens)
-    return tokens
+async def consume_user_tokens(
+    username: str, texts: List[str], *, timing: ExecutionTiming | None = None
+) -> int:
+    # Tokenizers and tenant accounting both acquire threading locks. Inference
+    # can hold the tokenizer lock for an entire batch, so neither belongs on the
+    # event loop. Use the general pool so accounting does not queue behind GPU work.
+    def count_and_consume():
+        tokens = count_usage_tokens(texts, timing=timing)
+        tenant_store.check_and_consume(username, tokens)
+        return tokens
+
+    return await run_in_threadpool_with_executor(
+        general_executor, count_and_consume, timing=timing
+    )
 
 # ----- Lifespan Manager -----
 
@@ -384,7 +394,7 @@ async def rerank_endpoint(
         raise HTTPException(status_code=400, detail="Query or documents must be provided")
 
     t_start = time.perf_counter()
-    consume_user_tokens(auth["username"], [request.query, *request.documents])
+    await consume_user_tokens(auth["username"], [request.query, *request.documents])
 
     key = get_rerank_cache_key(request.query, request.documents, request.top_k, request.return_documents, request.task_description)
     cached = rerank_cache.get(auth["username"], key)
@@ -470,21 +480,25 @@ async def embedding_endpoint(
     if model is None:
         raise HTTPException(status_code=503, detail="Embedding model is not loaded")
     has_media = any(isinstance(item, MultimodalInput) for item in inputs)
+    account_timing = ExecutionTiming()
+    t_account = time.perf_counter()
     if has_media:
-        def prepare_and_count():
+        def prepare_and_consume():
             decoded, descriptions = prepare_inputs(inputs, model)
-            return decoded, descriptions, count_input_tokens(decoded, model)
+            tokens = count_input_tokens(decoded, model, timing=account_timing)
+            tenant_store.check_and_consume(auth["username"], tokens)
+            return decoded, descriptions, tokens
 
         try:
             prepared_inputs, log_inputs, prompt_tokens = await run_in_threadpool_with_executor(
-                embedding_executor, prepare_and_count
+                general_executor, prepare_and_consume, timing=account_timing
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        tenant_store.check_and_consume(auth["username"], prompt_tokens)
     else:
         prepared_inputs, log_inputs = inputs, inputs
-        prompt_tokens = consume_user_tokens(auth["username"], inputs)
+        prompt_tokens = await consume_user_tokens(auth["username"], inputs, timing=account_timing)
+    account_s = time.perf_counter() - t_account
 
     logger.info(
         f"📄 Processing {len(inputs)} {request.input_type} input(s) for embeddings "
@@ -499,10 +513,17 @@ async def embedding_endpoint(
     if cached is not None:
         cached_result = deepcopy(cached)
         cached_result["usage"] = {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens}
-        logger.info(f"⏱ embed cache-hit total={time.perf_counter()-t_start:.3f}s n={len(inputs)}")
+        logger.info(
+            f"⏱ embed cache-hit n={len(inputs)} tokens={prompt_tokens} "
+            f"account={account_s:.3f}s account_queue={account_timing.queue_s:.3f}s "
+            f"account_lock={account_timing.lock_wait_s:.3f}s "
+            f"total={time.perf_counter()-t_start:.3f}s"
+        )
         return cached_result
 
     cuda_cache_manager.mark_inference_activity()
+
+    encode_timing = ExecutionTiming()
 
     def get_embedding_model_and_encode():
         # Select a pool instance when inference starts on a worker; token
@@ -511,16 +532,14 @@ async def embedding_endpoint(
             models_manager.embedding_model_pool.get_model()
             if models_manager.embedding_model_pool else models_manager.embedding_model
         )
-        return encode_inputs(inference_model, prepared_inputs, request.input_type)
+        return encode_inputs(inference_model, prepared_inputs, request.input_type, timing=encode_timing)
 
-    t_encode = time.perf_counter()
     try:
         docs_embeddings = await run_in_threadpool_with_executor(
-            embedding_executor, get_embedding_model_and_encode
+            embedding_executor, get_embedding_model_and_encode, timing=encode_timing
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    encode_s = time.perf_counter() - t_encode
 
     t_post = time.perf_counter()
     if hasattr(docs_embeddings, 'cpu'):
@@ -600,7 +619,11 @@ async def embedding_endpoint(
 
     total_s = time.perf_counter() - t_start
     logger.info(
-        f"⏱ embed n={len(inputs)} encode={encode_s:.3f}s "
+        f"⏱ embed n={len(inputs)} tokens={prompt_tokens} "
+        f"account={account_s:.3f}s account_queue={account_timing.queue_s:.3f}s "
+        f"account_lock={account_timing.lock_wait_s:.3f}s "
+        f"encode_queue={encode_timing.queue_s:.3f}s encode_lock={encode_timing.lock_wait_s:.3f}s "
+        f"encode={encode_timing.work_s:.3f}s "
         f"quant={quant_s:.3f}s post={post_s:.3f}s total={total_s:.3f}s"
     )
     return result
@@ -696,7 +719,7 @@ async def encode_ollama_embeddings(inputs: str | list[str] | None, auth: dict):
         inputs = [inputs]
     if get_embedding_model_for_token_count() is None:
         raise HTTPException(status_code=503, detail="Embedding model is not loaded")
-    prompt_tokens = consume_user_tokens(auth["username"], inputs)
+    prompt_tokens = await consume_user_tokens(auth["username"], inputs)
 
     logger.info(f"📄 Processing {len(inputs)} documents for Ollama embeddings")
 
@@ -754,7 +777,7 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest, auth: d
         else:
             inputs = request.content
             is_batch = True
-        consume_user_tokens(auth["username"], inputs)
+        await consume_user_tokens(auth["username"], inputs)
             
         logger.info(f"📄 Processing {len(inputs)} document(s) for Llama.cpp embeddings")
         

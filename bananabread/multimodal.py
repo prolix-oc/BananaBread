@@ -9,7 +9,6 @@ import binascii
 import io
 import math
 import threading
-from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
@@ -20,6 +19,7 @@ from bananabread.schemas import MediaBody, MultimodalInput
 from bananabread.config import args
 from bananabread.models.inference import encode_in_batches
 from bananabread.tenancy import count_text_tokens
+from bananabread.utils import ExecutionTiming, timed_lock
 
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 MAX_REQUEST_MEDIA_BYTES = 64 * 1024 * 1024
@@ -153,7 +153,9 @@ def prepare_inputs(values: list[str | MultimodalInput], model: Any) -> tuple[lis
     return prepared, log_inputs
 
 
-def count_input_tokens(inputs: list[Any], model: Any) -> int:
+def count_input_tokens(
+    inputs: list[Any], model: Any, *, timing: ExecutionTiming | None = None
+) -> int:
     """Use processor masks for media, with deterministic estimates for pure encoders.
 
     Image-only encoders without token IDs use 16x16 patch units; audio-only
@@ -161,7 +163,7 @@ def count_input_tokens(inputs: list[Any], model: Any) -> int:
     """
     total = 0
     preprocess = getattr(model, "preprocess", None)
-    with getattr(model, "tokenizer_lock", nullcontext()):
+    with timed_lock(getattr(model, "tokenizer_lock", None), timing):
         for item in inputs:
             if isinstance(item, str):
                 total += count_text_tokens([item], getattr(model, "tokenizer", None))
@@ -188,8 +190,10 @@ def count_input_tokens(inputs: list[Any], model: Any) -> int:
     return total
 
 
-def encode_inputs(model: Any, inputs: list[Any], input_type: str) -> Any:
-    with getattr(model, "tokenizer_lock", nullcontext()):
+def encode_inputs(
+    model: Any, inputs: list[Any], input_type: str, *, timing: ExecutionTiming | None = None
+) -> Any:
+    with timed_lock(getattr(model, "tokenizer_lock", None), timing):
         return encode_in_batches(
             model, inputs, input_type,
             batch_size=args.embedding_batch_size, max_tokens=args.embedding_batch_max_tokens,

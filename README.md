@@ -800,6 +800,28 @@ If Open Connections reports **“Embedding adapter returned no usable vectors”
 
 ## Troubleshooting
 
+### Embedding requests stall or Windows reports `WinError 64`
+
+Token counting shares a tokenizer lock with inference. BananaBread runs token
+counting and quota accounting on workers so a request waiting for that lock
+does not block health checks, connections, or other responses.
+
+The `⏱ embed` log records `tokens`, total `account` time, `account_queue` and
+`account_lock` waits, plus `encode_queue`, `encode_lock`, and `encode` work time.
+`account` includes its queue and lock waits; those fields should not be added
+to it. `encode` excludes queue and lock waits, but includes batching,
+tokenization, inference, and output conversion inside the worker. It is not a
+GPU-only measurement. Cache hits also log accounting times.
+
+If `encode` itself is very slow, include the token count, model/backend, batch
+limits, and dedicated/shared GPU memory usage in a report. Long lock waits
+can explain delayed requests without explaining the original slow inference.
+On Windows, an `IocpProactor.accept` / `WinError 64` traceback can also indicate
+[CPython issue #93821](https://github.com/python/cpython/issues/93821), which can
+close the listener after a client disconnect. Record the Python version and
+restart the server if it stops accepting connections; the accounting fix does
+not repair that separate asyncio failure.
+
 ### Embedding request returns `Method Not Allowed` or `Not Found`
 
 For a JSON body with `"content"`, use `POST /embedding`. `/embed` is not an endpoint. For OpenAI-format bodies with `"input"`, use `POST /v1/embeddings`; Ollama clients use `POST /api/embed` or `POST /api/embeddings`.

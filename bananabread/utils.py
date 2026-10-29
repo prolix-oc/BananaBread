@@ -211,4 +211,19 @@ async def run_in_threadpool_with_executor(
             if timing is not None:
                 timing.run_s = time.perf_counter() - started
 
-    return await loop.run_in_executor(executor, run)
+    future = loop.run_in_executor(executor, run)
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        # Python cannot stop an already running thread. Keep its caller alive
+        # (and its admission slot held) until that work has actually stopped.
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not future.cancelled():
+            future.exception()
+        raise

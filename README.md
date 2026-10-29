@@ -141,6 +141,10 @@ All embedding models and OpenAI, Ollama, and llama.cpp embedding routes split re
 
 The token budget limits batching, not document length: an input over budget runs alone with the model's existing context limit. Response order is preserved. Smaller limits reduce activation memory even with quantized weights; concurrent model instances each have their own budget.
 
+Concurrent embedding requests share a scheduler across the OpenAI, LM Studio, Ollama, and llama.cpp routes. Compatible text requests can share an inference batch after a collection delay of up to **2 ms** (`embedding_batch_wait_ms` / `--embedding-batch-wait-ms`; set to `0` to remove the collection delay). Queries and documents stay separate; media and unknown tokenizers run individually. The scheduler rotates between users and requests at batch boundaries, so a large request yields between batches. A running batch cannot be preempted, and scheduling does not increase the GPU's independent inference capacity.
+
+Admission defaults to **64 active or queued inference requests globally** and **8 per user**, shared across embedding and rerank routes. Classification uses the same global budget and a separate management share. Configure `inference_max_requests` / `--inference-max-requests` and `inference_max_requests_per_user` / `--inference-max-requests-per-user` with positive integers. Overflow returns HTTP **429** with `Retry-After: 1` before token accounting or media decoding. Health checks and model discovery remain available. Canceled requests retain their slot until any running worker finishes; queued embedding work is removed on cancellation. The limits apply per server process.
+
 Compatible Transformers encoders use a compact, broadcastable key padding mask for plain bidirectional SDPA attention. Causal, sliding-window, packed, and other custom patterns retain the standard mask implementation. This optimization applies by capability across embedding models, including their multimodal backbones, and does not require FlashAttention.
 
 CUDA inference defaults to `expandable_segments:True` with no block split limit, allowing the allocator to reuse memory across changing batch shapes. Explicit `PYTORCH_ALLOC_CONF` or `PYTORCH_CUDA_ALLOC_CONF` settings are preserved. GPU monitors include the allocator's reserved memory, which can exceed the memory occupied by active tensors; changing allocator settings requires restarting the process.
@@ -389,11 +393,14 @@ All available options (grouped by purpose):
 | `embedding_device` | `"cpu"` | `"cpu"`, `"cuda"`, `"cuda:0"`, or `"mps"` |
 | `rerank_device` | `"cpu"` | Same options as above |
 | **Embedding cache** | | |
-| `cache_limit` | `1024` | Max cache size in MB for each cache (embedding and rerank) |
+| `cache_limit` | `1024` | Aggregate estimated storage in MB for each cache (embedding and rerank), across all users |
 | `quant` | `"standard"` | Embedding quantization: `"standard"`, `"int8"`, or `"ubinary"` |
 | `embedding_dim` | `1024` | Output dimensions for MixedBread, Nemotron, EmbeddingGemma, and HF models (truncation where supported); EmbeddingGemma maps the shared default to 768 |
 | `embedding_batch_size` | `8` | Maximum inputs per embedding inference batch, for every model |
 | `embedding_batch_max_tokens` | `8192` | Maximum padded tokens per batch; longer individual inputs run alone |
+| `embedding_batch_wait_ms` | `2` | Cross-request batch collection delay in milliseconds; integer 0–1000 |
+| `inference_max_requests` | `64` | Maximum active and queued inference requests per process |
+| `inference_max_requests_per_user` | `8` | Maximum active and queued inference requests per user |
 | `embedding_flash_attention` | `false` | Prefer FlashAttention 2 on compatible CUDA/HIP embedding backbones; requires `flash_attn` |
 | **CPU / threading** | | |
 | `use_cores` | `null` | Limit to N CPU cores (`null` = use all) |
@@ -662,7 +669,7 @@ Token limits are enforced per user and automatically reset at daily and weekly i
 2. **Tier limits** — shared limits for a group of users
 3. **Default limits** — fallback for all users without overrides
 
-Cache scope can be `global` (default, shared across all users) or `per_user` (each user gets an isolated cache with its own limit).
+Cache scope can be `global` (default, shared across all users) or `per_user` (each user gets isolated entries with its own limit). In both modes, `cache_limit` caps aggregate estimated storage **for each cache** across all users; embedding and rerank together can use up to twice this setting. Management defaults and user overrides set additional limits within this budget. LRU eviction first enforces the user's limit, then evicts the oldest entries across users as needed. Oversized results are not cached, and a limit of `0` disables storage. Changing scope clears existing entries. Estimates include Python float-list storage and returned rerank documents; this setting does not cap total process RSS. `/v1/memory` reports each cache's `aggregate_limit` and `current_size`, plus active inference admission counts.
 
 ### Request examples
 

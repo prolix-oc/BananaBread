@@ -302,6 +302,11 @@ def test_native_mistral3_text_image_pipeline_without_downloads(tmp_path):
     snapshot = tmp_path / "sentence-transformer"
     saved.save(str(snapshot))
     model = Nemotron35EmbeddingModel(str(snapshot), truncate_dim=16, compute_dtype="float32")
+    from bananabread.tenancy import count_text_tokens
+
+    assert count_text_tokens(["hello"], model.tokenizer) == 1
+    assert count_text_tokens(["hello " * 50], model.tokenizer) == 50
+    assert count_text_tokens(["hello"] * 40, model.tokenizer) == 40
     configure_embedding_attention(model)
     assert model.model[0].auto_model.config.text_config._attn_implementation == COMPACT_SDPA
     image = Image.new("RGB", (32, 32), "red")

@@ -452,3 +452,88 @@ def test_embedding_cache_key_stable_for_same_arguments():
     key1 = get_embedding_cache_key(["hello world"], "float", "standard")
     key2 = get_embedding_cache_key(["hello world"], "float", "standard")
     assert key1 == key2
+
+
+@pytest.mark.parametrize("texts,expected", [
+    (["tiny doc"], 2),
+    (["word " * 5000], 5000),
+    (["word " * 500] * 40, 20000),
+])
+def test_real_huggingface_batch_encoding_counts_content(texts, expected):
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+    from transformers import PreTrainedTokenizerFast
+
+    backend = Tokenizer(WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
+    backend.pre_tokenizer = Whitespace()
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="[UNK]")
+    assert count_text_tokens(texts, tokenizer) == expected
+
+
+def test_user_caches_share_aggregate_lru_budget():
+    from bananabread.cache import get_cache_size
+
+    value = "x" * 100
+    size = get_cache_size(value)
+    cache = UserScopedCache(size * 2)
+    cache.configure(scope="per_user", default_limit_bytes=size * 10)
+    cache.set("a", "key", value)
+    cache.set("b", "key", value)
+    assert cache.get("a", "key") == value  # Refresh a, so b should be evicted.
+    cache.set("c", "key", value)
+    assert cache.get("a", "key") == value
+    assert cache.get("b", "key") is None
+    assert cache.get("c", "key") == value
+    assert cache.total_size() == size * 2
+    assert cache.stats()["aggregate_limit"] == size * 2
+
+
+def test_zero_cache_limit_disables_storage_and_scope_changes_drop_old_entries():
+    cache = UserScopedCache(10000)
+    cache.set("a", "key", "shared")
+    cache.configure(scope="per_user", default_limit_bytes=0)
+    assert cache.get("a", "key") is None
+    cache.set("a", "key", "private")
+    assert cache.total_size() == 0
+    cache.configure(scope="per_user", default_limit_bytes=10000)
+    cache.set("a", "key", "private")
+    cache.configure(scope="global")
+    assert cache.get("b", "key") is None
+    assert cache.total_size() == 0
+
+
+def test_oversized_cache_entry_does_not_evict_other_users():
+    cache = UserScopedCache(200)
+    cache.configure(scope="per_user")
+    cache.set("a", "key", "cached")
+    before = cache.total_size()
+    cache.set("b", "key", "large" * 1000)
+    assert cache.get("a", "key") == "cached"
+    assert cache.total_size() == before
+
+
+def test_concurrent_cache_reads_writes_and_reconfiguration():
+    from concurrent.futures import ThreadPoolExecutor
+
+    cache = UserScopedCache(4096)
+    cache.configure(scope="per_user")
+
+    def work(i):
+        for n in range(100):
+            cache.set(str(i), str(n % 10), "x" * 100)
+            cache.get(str(i), str((n + 1) % 10))
+            if n % 10 == 0:
+                cache.configure(scope="per_user", default_limit_bytes=1024)
+            assert cache.total_size() <= 4096
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(work, range(8)))
+    stats = cache.stats()
+    assert stats["current_size"] == sum(user["current_size"] for user in stats["users"].values())
+
+
+def test_rerank_cache_budget_includes_returned_document_bodies():
+    cache = UserScopedCache(4096)
+    cache.set("alice", "huge", [{"index": 0, "relevance_score": 1.0, "document": "x" * 10000}])
+    assert cache.get("alice", "huge") is None

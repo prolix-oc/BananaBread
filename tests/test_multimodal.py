@@ -295,6 +295,8 @@ def test_open_connections_model_discovery_and_ten_input_batch(client, monkeypatc
     monkeypatch.setattr(model, "max_seq_length", 32768, raising=False)
     monkeypatch.setattr(api.args, "embedding_batch_size", 3)
     monkeypatch.setattr(api.args, "embedding_batch_max_tokens", 12)
+    monkeypatch.setattr(api.app.state.embedding_scheduler, "batch_size", 3)
+    monkeypatch.setattr(api.app.state.embedding_scheduler, "max_tokens", 12)
 
     # Open Connections filters /api/tags by these keywords, then reads
     # /api/show's *_length fields to choose its context and vector dimensions.
@@ -384,7 +386,7 @@ def test_ollama_invalid_vectors_produce_an_explicit_http_error(client, monkeypat
     transport, model, charged = client
     import bananabread.api as api
 
-    monkeypatch.setattr(api, "encode_inputs", lambda *args: vectors)
+    monkeypatch.setattr(api, "encode_inputs", lambda *args, **kwargs: vectors)
     response = transport.post(route, json={"model": "test/multimodal", "input": "hello"})
     assert response.status_code == 500
     assert message in response.json()["detail"]

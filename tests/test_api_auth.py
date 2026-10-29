@@ -355,3 +355,93 @@ def test_management_auth_is_required_when_api_auth_is_disabled(
     assert response.status_code == 200
     assert client.post("/management/auth", json={"key": "management-key"}).status_code == 200
     assert client.get("/v1/management/config").status_code == 200
+
+
+@pytest.mark.parametrize("route,field", [
+    ("/v1/embeddings", "input"), ("/v0/embeddings", "input"),
+    ("/api/v0/embeddings", "input"), ("/api/embed", "input"),
+    ("/api/embeddings", "prompt"), ("/embedding", "content"),
+    ("/v1/rerank", "documents"),
+])
+def test_overload_rejected_before_accounting_on_every_user_inference_route(api_client, monkeypatch, route, field):
+    from bananabread.scheduling import InferenceAdmission
+
+    api, client, store, model = api_client
+    admission = InferenceAdmission(1, 1)
+    monkeypatch.setattr(api, "inference_admission", admission)
+    payload = {field: ["hello"], "query": "hello"} if field == "documents" else {field: "hello"}
+    with admission.slot("alice"):
+        response = client.post(route, json=payload, headers={"Authorization": "Bearer alice-key"})
+    assert response.status_code == 429, response.text
+    assert response.headers["Retry-After"] == "1"
+    assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 0
+    assert model.calls == 0
+
+
+@pytest.mark.parametrize("route,field", [
+    ("/v1/embeddings", "input"), ("/api/embed", "input"), ("/embedding", "content"),
+])
+def test_batch_encoding_usage_and_quota_are_content_sensitive(api_client, monkeypatch, route, field):
+    from transformers import BatchEncoding
+
+    api, client, store, model = api_client
+    # The real BatchEncoding container caused the 23-token production defect.
+    def tokenizer(texts, **kwargs):
+        if kwargs.get("return_tensors"):
+            return BatchEncoding({"input_ids": np.zeros((len(texts), max(map(len, texts))))})
+        return BatchEncoding({
+            "input_ids": [list(range(len(text.split()))) for text in texts],
+            "attention_mask": [[1] * len(text.split()) for text in texts],
+        })
+
+    monkeypatch.setattr(model, "tokenizer", tokenizer)
+    # Avoid making the tokenizer stub double as the batch planner.
+    monkeypatch.setattr(api, "_padded_input_length", lambda *args: 1)
+    store.update_config(default_limits={"daily": 5})
+    headers = {"Authorization": "Bearer alice-key"}
+    for text in ("one", "one two three"):
+        response = client.post(route, json={field: text, "model": "test/auth"}, headers=headers)
+        assert response.status_code == 200, response.text
+        if route == "/v1/embeddings":
+            assert response.json()["usage"]["prompt_tokens"] == len(text.split())
+        elif route == "/api/embed":
+            assert response.json()["prompt_eval_count"] == len(text.split())
+    denied = client.post(route, json={field: "one two", "model": "test/auth"}, headers=headers)
+    assert denied.status_code == 429
+    assert denied.json()["detail"]["requested"] == 2
+    assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 4
+
+
+def test_simultaneous_http_requests_share_batches_without_mixing_tenant_results(api_client, monkeypatch):
+    api, client, store, model = api_client
+    store.create_user("bob")
+    store.set_user_api_key("bob", "bob-key")
+    monkeypatch.setattr(api.app.state.embedding_scheduler, "wait_s", 0.05)
+    # A measurable model lets the scheduler combine the independent requests.
+    monkeypatch.setattr(model, "preprocess", lambda inputs: {"input_ids": np.zeros((1, 1))}, raising=False)
+    encoded = []
+
+    def encode(inputs, **kwargs):
+        encoded.append(list(inputs))
+        return np.array([[float(text), 1.0] for text in inputs])
+
+    monkeypatch.setattr(model, "encode", encode)
+    barrier = threading.Barrier(8)
+
+    def request(i):
+        username = "alice" if i % 2 else "bob"
+        barrier.wait(timeout=3)
+        response = client.post("/v1/embeddings", json={"input": str(i)},
+                               headers={"Authorization": f"Bearer {username}-key"})
+        assert response.status_code == 200, response.text
+        return response.json()["data"][0]["embedding"]
+
+    with ThreadPoolExecutor(max_workers=8) as clients:
+        results = list(clients.map(request, range(1, 9)))
+    assert results == [[float(i), 1.0] for i in range(1, 9)]
+    assert any(len(batch) > 1 for batch in encoded)
+    assert sum(map(len, encoded)) == 8
+    users = store.snapshot()["users"]
+    assert users["alice"]["usage"]["daily"]["tokens"] == 4
+    assert users["bob"]["usage"]["daily"]["tokens"] == 4
+    assert api.inference_admission.stats()["active_requests"] == 0

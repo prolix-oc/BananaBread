@@ -3,6 +3,7 @@ import os
 import secrets
 import threading
 from copy import deepcopy
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -466,7 +467,7 @@ def count_text_tokens(texts: list[str], tokenizer: Any) -> int:
 
     try:
         encoded = tokenizer(texts, add_special_tokens=True, padding=False, truncation=False)
-        input_ids = encoded.get("input_ids", encoded) if isinstance(encoded, dict) else encoded
+        input_ids = encoded["input_ids"] if isinstance(encoded, Mapping) else encoded
         return sum(_token_count(item) for item in input_ids)
     except Exception:
         pass

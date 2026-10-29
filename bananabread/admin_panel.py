@@ -84,7 +84,7 @@ ADMIN_PANEL_HTML = """<!doctype html>
 
       <div class="card">
         <h2>Cache</h2>
-        <p>Cache can be <strong>global</strong> (shared across users) or <strong>per-user</strong> (isolated). Sizes are in MB. Leave blank to use the server default.</p>
+        <p>Cache can be <strong>global</strong> (shared across users) or <strong>per-user</strong> (isolated). All users share the server's total budget for each cache. Sizes are in MB; 0 disables storage. Leave blank to use the server default.</p>
         <label for="cacheScope">Cache scope</label>
         <select id="cacheScope">
           <option value="global">Global (shared across users)</option>

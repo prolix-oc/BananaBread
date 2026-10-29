@@ -96,12 +96,21 @@ def test_raw_torch_and_onnx_tokenizers_use_the_same_batch_limits():
     ]
 
 
-@pytest.mark.parametrize("key", ["embedding_batch_size", "embedding_batch_max_tokens"])
+@pytest.mark.parametrize("key", ["embedding_batch_size", "embedding_batch_max_tokens",
+                                "inference_max_requests", "inference_max_requests_per_user"])
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "8"])
 def test_invalid_batch_config_is_rejected(monkeypatch, key, value):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     parsed = argparse.Namespace(**{**config.DEFAULTS, key: value})
     with pytest.raises(ValueError, match=key):
+        config.validate_args(parsed)
+
+
+@pytest.mark.parametrize("value", [-1, 1001, True, 1.5, "2"])
+def test_invalid_batch_collection_delay_is_rejected(monkeypatch, value):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    parsed = argparse.Namespace(**{**config.DEFAULTS, "embedding_batch_wait_ms": value})
+    with pytest.raises(ValueError, match="embedding_batch_wait_ms"):
         config.validate_args(parsed)
 
 

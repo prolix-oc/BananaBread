@@ -214,9 +214,9 @@ def get_cache_size(obj):
 
     This version short-circuits on the common cached-response shape:
       {"object": "list", "data": [{"embedding": [...], ...}, ...], ...}
-    and falls back to a bounded shallow walk for anything else. Accuracy
-    only needs to be within an order of magnitude for eviction to behave
-    sensibly, since ``cache_limit_bytes`` is a soft target.
+    and otherwise walks containers, treating numeric vectors in constant time.
+    Nested rerank results include their document strings in the estimate too.
+    This budgets estimated Python storage, not total process RSS.
     """
     # Fast path: OpenAI embeddings response
     if isinstance(obj, dict):
@@ -234,13 +234,16 @@ def get_cache_size(obj):
                     # base64 / bytes path
                     return len(data) * (len(emb) + 256)
 
-    # Fallback: bounded shallow estimate (no deep recursion over floats)
+    # Never walk an embedding float-by-float, including non-OpenAI shapes.
     try:
         size = sys.getsizeof(obj)
         if isinstance(obj, dict):
-            size += sum(sys.getsizeof(k) + sys.getsizeof(v) for k, v in obj.items())
-        elif isinstance(obj, (list, tuple, set)):
-            size += sys.getsizeof(obj[0]) * len(obj) if obj else 0
+            size += sum(sys.getsizeof(k) + get_cache_size(v) for k, v in obj.items())
+        elif isinstance(obj, (list, tuple)):
+            if obj and isinstance(obj[0], (int, float)):
+                size += max(32, sys.getsizeof(obj[0])) * len(obj)
+            else:
+                size += sum(get_cache_size(value) for value in obj)
         return size
     except Exception:
         return 1024  # harmless default
@@ -302,13 +305,21 @@ class LimitedCache(OrderedDict):
 
 
 class UserScopedCache:
+    """Tenant-isolated LRU entries sharing one aggregate memory budget.
+
+    A single lock covers lookup, recency, accounting and eviction. In particular,
+    a concurrent insert cannot evict an entry between a contains/get pair.
+    """
+
     def __init__(self, global_limit_bytes: int):
         self.global_limit_bytes = global_limit_bytes
         self.default_limit_bytes = global_limit_bytes
         self.scope = "global"
         self.user_limits: dict[str, int] = {}
-        self.global_cache = LimitedCache(global_limit_bytes)
-        self.user_caches: dict[str, LimitedCache] = {}
+        self.entries = OrderedDict()
+        self.recency: dict[str | None, OrderedDict] = {}
+        self.sizes: dict[str | None, int] = {}
+        self.current_size = 0
         self.lock = threading.RLock()
 
     def configure(
@@ -319,57 +330,97 @@ class UserScopedCache:
     ):
         if scope not in {"global", "per_user"}:
             raise ValueError("cache scope must be 'global' or 'per_user'")
-
         with self.lock:
+            if scope != self.scope:
+                self.clear()
             self.scope = scope
-            self.default_limit_bytes = default_limit_bytes or self.global_limit_bytes
-            self.user_limits = user_limits or {}
-            self.global_cache.set_limit(self.default_limit_bytes)
-            for username, cache in self.user_caches.items():
-                cache.set_limit(self._limit_for_user_locked(username))
+            self.default_limit_bytes = (
+                self.global_limit_bytes if default_limit_bytes is None else default_limit_bytes
+            )
+            self.user_limits = dict(user_limits or {})
+            self._evict_locked()
 
     def get(self, username: str, key: str):
-        cache = self._cache_for_user(username)
-        if key not in cache:
-            return None
-        return cache[key]
+        with self.lock:
+            identity = (None if self.scope == "global" else username, key)
+            entry = self.entries.get(identity)
+            if entry is None:
+                return None
+            self.entries.move_to_end(identity)
+            self.recency[identity[0]].move_to_end(identity)
+            return entry[0]
 
     def set(self, username: str, key: str, value: Any):
-        self._cache_for_user(username)[key] = value
+        size = get_cache_size(value)
+        with self.lock:
+            namespace = None if self.scope == "global" else username
+            identity = (namespace, key)
+            if identity in self.entries:
+                self._remove_locked(identity)
+            # An oversized result should not flush everyone else's useful entries.
+            if size > min(self.global_limit_bytes, self._limit_locked(namespace)):
+                return
+            self.entries[identity] = (value, size)
+            self.recency.setdefault(namespace, OrderedDict())[identity] = None
+            self.sizes[namespace] = self.sizes.get(namespace, 0) + size
+            self.current_size += size
+            self._evict_locked(namespace)
+
+    def _limit_locked(self, namespace):
+        return self.user_limits.get(namespace, self.default_limit_bytes)
+
+    def _remove_locked(self, identity):
+        _, size = self.entries.pop(identity)
+        namespace = identity[0]
+        del self.recency[namespace][identity]
+        self.current_size -= size
+        self.sizes[namespace] -= size
+        if self.sizes[namespace] == 0:
+            del self.sizes[namespace]
+            del self.recency[namespace]
+
+    def _evict_locked(self, namespace=None):
+        # First enforce tenant shares; then apply LRU across all remaining entries.
+        namespaces = list(self.sizes) if namespace is None else [namespace]
+        for user in namespaces:
+            while self.sizes.get(user, 0) > self._limit_locked(user):
+                self._remove_locked(next(iter(self.recency[user])))
+        while self.current_size > self.global_limit_bytes and self.entries:
+            self._remove_locked(next(iter(self.entries)))
 
     def clear(self):
         with self.lock:
-            self.global_cache.clear()
-            for cache in self.user_caches.values():
-                cache.clear()
+            self.entries.clear()
+            self.recency.clear()
+            self.sizes.clear()
+            self.current_size = 0
 
     def stats(self):
         with self.lock:
+            counts = {}
+            for namespace, _ in self.entries:
+                counts[namespace] = counts.get(namespace, 0) + 1
+
+            def namespace_stats(namespace):
+                return {
+                    "entries": counts.get(namespace, 0),
+                    "current_size": self.sizes.get(namespace, 0),
+                    "limit": self._limit_locked(namespace),
+                }
+
             return {
                 "scope": self.scope,
-                "global": self.global_cache.stats(),
+                "aggregate_limit": self.global_limit_bytes,
+                "current_size": self.current_size,
+                "global": namespace_stats(None),
                 "users": {
-                    username: cache.stats()
-                    for username, cache in self.user_caches.items()
+                    user: namespace_stats(user) for user in counts if user is not None
                 },
             }
 
     def total_size(self) -> int:
         with self.lock:
-            return self.global_cache.current_size + sum(
-                cache.current_size for cache in self.user_caches.values()
-            )
-
-    def _cache_for_user(self, username: str) -> LimitedCache:
-        with self.lock:
-            if self.scope == "global":
-                return self.global_cache
-            if username not in self.user_caches:
-                self.user_caches[username] = LimitedCache(self._limit_for_user_locked(username))
-            return self.user_caches[username]
-
-    def _limit_for_user_locked(self, username: str) -> int:
-        return self.user_limits.get(username, self.default_limit_bytes)
+            return self.current_size
 
 # ----- Cache Key Helpers -----
 

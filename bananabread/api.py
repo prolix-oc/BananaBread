@@ -50,6 +50,8 @@ import bananabread.models.manager as models_manager
 from bananabread.models.manager import ModelPool
 from bananabread.multimodal import prepare_inputs, count_input_tokens, encode_inputs
 from bananabread.schemas import MultimodalInput
+from bananabread.models.inference import _padded_input_length
+from bananabread.scheduling import EmbeddingScheduler, InferenceAdmission
 
 # ----- Threadpool Optimization Configuration -----
 
@@ -118,6 +120,9 @@ general_executor = ThreadPoolExecutor(max_workers=GENERAL_THREADS, thread_name_p
 QUANT_THREADS = max(2, CPU_COUNT // 4)
 quant_executor = ThreadPoolExecutor(max_workers=QUANT_THREADS, thread_name_prefix="quant")
 logger.info(f"  - Quantization threads: {QUANT_THREADS}")
+inference_admission = InferenceAdmission(
+    args.inference_max_requests, args.inference_max_requests_per_user
+)
 
 # ----- Caches -----
 
@@ -207,6 +212,10 @@ def get_api_user(api_key: str | None = Depends(get_api_key)):
     username = tenant_store.authenticate_user(api_key)
     return {"api_key": api_key, "username": username}
 
+async def get_inference_user(auth: dict = Depends(get_api_user)):
+    with inference_admission.slot(auth["username"]):
+        yield auth
+
 def get_management_key(request: Request, authorization: str = Header(None)):
     # Try Bearer token first
     if authorization and authorization.startswith("Bearer "):
@@ -225,6 +234,10 @@ def get_management_key(request: Request, authorization: str = Header(None)):
             pass
 
     raise HTTPException(status_code=401, detail="Management authentication required")
+
+async def get_management_inference_key(api_key: str = Depends(get_management_key)):
+    with inference_admission.slot("__management__"):
+        yield api_key
 
 def get_embedding_model_for_token_count():
     model = models_manager.embedding_model
@@ -258,6 +271,37 @@ async def consume_user_tokens(
         general_executor, count_and_consume, timing=timing
     )
 
+
+def encode_scheduled_batch(inputs, input_type, timing):
+    model = (
+        models_manager.embedding_model_pool.get_model()
+        if models_manager.embedding_model_pool else models_manager.embedding_model
+    )
+    return encode_inputs(model, inputs, input_type, timing=timing)
+
+
+async def schedule_embeddings(username, inputs, input_type="document", *, timing=None):
+    model = get_embedding_model_for_token_count()
+    if model is None:
+        raise HTTPException(status_code=503, detail="Embedding model is not loaded")
+    planning_timing = ExecutionTiming()
+
+    def plan():
+        with timed_lock(getattr(model, "tokenizer_lock", None), planning_timing):
+            return [
+                _padded_input_length(model, item, input_type) if isinstance(item, str) else None
+                for item in inputs
+            ]
+
+    lengths = await run_in_threadpool_with_executor(general_executor, plan, timing=planning_timing)
+    if timing is not None:
+        timing.queue_s += planning_timing.queue_s
+        timing.run_s += planning_timing.run_s
+        timing.lock_wait_s += planning_timing.lock_wait_s
+    return await app.state.embedding_scheduler.submit(
+        username, inputs, lengths, input_type, timing=timing
+    )
+
 # ----- Lifespan Manager -----
 
 @asynccontextmanager
@@ -272,11 +316,18 @@ async def lifespan(app: FastAPI):
     models_manager.initialize_models()
     logger.info("🟢 Lifespan: Models initialized")
     
-    yield
-    
-    logger.info("🔴 Lifespan: Shutting down...")
-    cleanup_resources()
-    logger.info("🔴 Lifespan: Shutdown complete")
+    app.state.embedding_scheduler = EmbeddingScheduler(
+        embedding_executor, encode_scheduled_batch, workers=EMBEDDING_THREADS,
+        batch_size=args.embedding_batch_size, max_tokens=args.embedding_batch_max_tokens,
+        wait_ms=args.embedding_batch_wait_ms,
+    )
+    try:
+        yield
+    finally:
+        logger.info("🔴 Lifespan: Shutting down...")
+        await app.state.embedding_scheduler.close()
+        cleanup_resources()
+        logger.info("🔴 Lifespan: Shutdown complete")
 
 # ----- FastAPI Application -----
 
@@ -386,7 +437,7 @@ async def bulk_regenerate_user_keys_endpoint(request: BulkRegenerateRequest, api
 async def rerank_endpoint(
     request: RerankRequest,
     background_tasks: BackgroundTasks,
-    auth: dict = Depends(get_api_user),
+    auth: dict = Depends(get_inference_user),
 ):
     if models_manager.rerank_model is None and models_manager.rerank_model_pool is None:
         raise HTTPException(status_code=503, detail="Reranking is disabled")
@@ -451,7 +502,7 @@ async def rerank_endpoint(
 async def embedding_endpoint(
     request: EmbeddingRequest,
     background_tasks: BackgroundTasks,
-    auth: dict = Depends(get_api_user),
+    auth: dict = Depends(get_inference_user),
 ):
     # ---- timing instrumentation ----
     # Use perf_counter throughout so we can diff between the inference finishing
@@ -525,18 +576,9 @@ async def embedding_endpoint(
 
     encode_timing = ExecutionTiming()
 
-    def get_embedding_model_and_encode():
-        # Select a pool instance when inference starts on a worker; token
-        # accounting above uses a representative without advancing the pool.
-        inference_model = (
-            models_manager.embedding_model_pool.get_model()
-            if models_manager.embedding_model_pool else models_manager.embedding_model
-        )
-        return encode_inputs(inference_model, prepared_inputs, request.input_type, timing=encode_timing)
-
     try:
-        docs_embeddings = await run_in_threadpool_with_executor(
-            embedding_executor, get_embedding_model_and_encode, timing=encode_timing
+        docs_embeddings = await schedule_embeddings(
+            auth["username"], prepared_inputs, request.input_type, timing=encode_timing
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -633,18 +675,18 @@ async def embedding_endpoint(
 async def lmstudio_embeddings_endpoint(
     request: EmbeddingRequest,
     background_tasks: BackgroundTasks,
-    auth: dict = Depends(get_api_user),
+    auth: dict = Depends(get_inference_user),
 ):
     """LM Studio v0 uses the same embedding response envelope as OpenAI."""
     return await embedding_endpoint(request, background_tasks, auth)
 
 @app.post("/v1/classify")
-async def classify_endpoint(request: ClassificationRequest, api_key: str = Depends(get_management_key)):
-    clf = models_manager.get_classifier()
+async def classify_endpoint(request: ClassificationRequest, api_key: str = Depends(get_management_inference_key)):
+    def classify():
+        return models_manager.get_classifier()(request.input)
+
     raw_result = await run_in_threadpool_with_executor(
-        classification_executor,
-        clf,
-        request.input
+        classification_executor, classify
     )
     
     if isinstance(raw_result, list) and len(raw_result) > 0 and isinstance(raw_result[0], list):
@@ -723,16 +765,9 @@ async def encode_ollama_embeddings(inputs: str | list[str] | None, auth: dict):
 
     logger.info(f"📄 Processing {len(inputs)} documents for Ollama embeddings")
 
-    def get_embedding_model_and_encode(inputs):
-        if models_manager.embedding_model_pool:
-            model = models_manager.embedding_model_pool.get_model()
-        else:
-            model = models_manager.embedding_model
-        return checked_embedding_vectors(encode_inputs(model, inputs, "document"), len(inputs))
-
     try:
-        docs_embeddings = await run_in_threadpool_with_executor(
-            embedding_executor, get_embedding_model_and_encode, inputs
+        docs_embeddings = checked_embedding_vectors(
+            await schedule_embeddings(auth["username"], inputs), len(inputs)
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -744,7 +779,7 @@ async def encode_ollama_embeddings(inputs: str | list[str] | None, auth: dict):
 
 
 @app.post("/api/embeddings", response_model=OllamaEmbeddingResponse)
-async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest, auth: dict = Depends(get_api_user)):
+async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest, auth: dict = Depends(get_inference_user)):
     embeddings, _ = await encode_ollama_embeddings(request.prompt or request.input, auth)
     return OllamaEmbeddingResponse(
         embedding=embeddings[0], model=models_manager.embedding_model_name
@@ -752,7 +787,7 @@ async def ollama_embeddings_endpoint(request: OllamaEmbeddingRequest, auth: dict
 
 
 @app.post("/api/embed", response_model=OllamaEmbedResponse)
-async def ollama_embed_endpoint(request: OllamaEmbeddingRequest, auth: dict = Depends(get_api_user)):
+async def ollama_embed_endpoint(request: OllamaEmbeddingRequest, auth: dict = Depends(get_inference_user)):
     started = time.perf_counter_ns()
     inputs = request.input if request.input is not None else request.prompt
     embeddings, prompt_tokens = await encode_ollama_embeddings(inputs, auth)
@@ -766,7 +801,7 @@ async def ollama_embed_endpoint(request: OllamaEmbeddingRequest, auth: dict = De
     )
 
 @app.post("/embedding")
-async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest, auth: dict = Depends(get_api_user)):
+async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest, auth: dict = Depends(get_inference_user)):
     try:
         if not request.content:
             raise HTTPException(status_code=400, detail="Content must be provided")
@@ -777,22 +812,13 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest, auth: d
         else:
             inputs = request.content
             is_batch = True
+        if get_embedding_model_for_token_count() is None:
+            raise HTTPException(status_code=503, detail="Embedding model is not loaded")
         await consume_user_tokens(auth["username"], inputs)
             
         logger.info(f"📄 Processing {len(inputs)} document(s) for Llama.cpp embeddings")
         
-        def get_embedding_model_and_encode(inputs):
-            if models_manager.embedding_model_pool:
-                model = models_manager.embedding_model_pool.get_model()
-            else:
-                model = models_manager.embedding_model
-            return encode_inputs(model, inputs, "document")
-        
-        docs_embeddings = await run_in_threadpool_with_executor(
-            embedding_executor,
-            get_embedding_model_and_encode,
-            inputs
-        )
+        docs_embeddings = await schedule_embeddings(auth["username"], inputs)
         
         # Processing vectors logic
         def process_vector(vec, normalize=True):
@@ -855,6 +881,8 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest, auth: d
             embedding=response_embedding,
             model=models_manager.embedding_model_name
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Error in llamacpp_embedding_endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -879,6 +907,7 @@ async def memory_usage(api_key: str = Depends(get_management_key)):
     data["rerank_threads"] = RERANK_THREADS
     data["classification_threads"] = CLASSIFICATION_THREADS
     data["general_threads"] = GENERAL_THREADS
+    data["inference_admission"] = inference_admission.stats()
     
     data["cuda_cache_manager"] = cuda_cache_manager.get_stats()
     

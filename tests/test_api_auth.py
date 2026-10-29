@@ -529,3 +529,95 @@ def test_parallel_token_reservations_enforce_budget_before_charging(api_client, 
             release.set()
         assert sorted(f.result(timeout=2).status_code for f in futures) == [200, 429]
     assert admission.stats()["active_tokens"] == 0
+
+
+@pytest.mark.parametrize("input_value", ["hello", {"text": "hello"}])
+def test_optional_admission_wait_keeps_health_live_and_charges_only_after_capacity(api_client, monkeypatch, input_value):
+    from bananabread.scheduling import InferenceAdmission
+
+    api, client, store, model = api_client
+    admission = InferenceAdmission(64, 8, max_tokens=1)
+    monkeypatch.setattr(api, "inference_admission", admission)
+    monkeypatch.setattr(api.args, "inference_admission_wait_ms", 1000)
+    waiting = threading.Event()
+    original_wait = admission.wait_for_tokens
+
+    async def wait(*args):
+        waiting.set()
+        return await original_wait(*args)
+
+    monkeypatch.setattr(admission, "wait_for_tokens", wait)
+    headers = {"Authorization": "Bearer alice-key"}
+    with ThreadPoolExecutor(max_workers=1) as clients:
+        with admission.slot("busy") as busy:
+            busy.reserve_tokens(1)
+            response = clients.submit(client.post, "/v1/embeddings", json={"input": input_value}, headers=headers)
+            assert waiting.wait(2)
+            assert client.get("/v1/health", headers=headers).status_code == 200
+            assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 0
+        result = response.result(timeout=2)
+        assert result.status_code == 200, result.text
+    assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 1
+    assert admission.stats()["active_tokens"] == 0
+    assert admission.stats()["waiting_requests"] == 0
+
+
+@pytest.mark.parametrize("route,field,value", [
+    ("/v1/embeddings", "input", "hello"),
+    ("/v1/embeddings", "input", {"text": "hello"}),
+    ("/api/embed", "input", "hello"),
+    ("/embedding", "content", "hello"),
+    ("/v1/rerank", "documents", ["hello"]),
+])
+def test_optional_admission_deadline_returns_429_without_quota_charge(api_client, monkeypatch, route, field, value):
+    from bananabread.scheduling import InferenceAdmission
+
+    api, client, store, model = api_client
+    admission = InferenceAdmission(64, 8, max_tokens=1)
+    monkeypatch.setattr(api, "inference_admission", admission)
+    monkeypatch.setattr(api.args, "inference_admission_wait_ms", 10)
+    with admission.slot("busy") as busy:
+        busy.reserve_tokens(1)
+        response = client.post(route, json={field: value, "model": "test/auth", "query": "hello"},
+                               headers={"Authorization": "Bearer alice-key"})
+        assert response.status_code == 429, response.text
+        assert int(response.headers["Retry-After"]) >= 1
+        assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 0
+        assert admission.stats()["active_requests"] == 1
+    assert admission.stats()["active_tokens"] == 0
+    assert admission.stats()["waiting_requests"] == 0
+    assert model.calls == 0
+
+
+def test_running_rerank_and_embedding_share_work_capacity_and_release_it(api_client, monkeypatch):
+    from bananabread.scheduling import InferenceAdmission
+
+    api, client, store, model = api_client
+    admission = InferenceAdmission(64, 8, max_tokens=2)
+    monkeypatch.setattr(api, "inference_admission", admission)
+    store.create_user("bob")
+    store.set_user_api_key("bob", "bob-key")
+    started, release = threading.Event(), threading.Event()
+    original_rank = model.rank
+
+    def rank(*args, **kwargs):
+        started.set()
+        assert release.wait(3)
+        return original_rank(*args, **kwargs)
+
+    monkeypatch.setattr(model, "rank", rank)
+    with ThreadPoolExecutor(max_workers=1) as clients:
+        future = clients.submit(client.post, "/v1/rerank", json={"query": "hello", "documents": ["world"]},
+                                headers={"Authorization": "Bearer alice-key"})
+        try:
+            assert started.wait(2)
+            assert admission.stats()["active_tokens"] == 2
+            response = client.post("/v1/embeddings", json={"input": "hello"},
+                                   headers={"Authorization": "Bearer bob-key"})
+            assert response.status_code == 429
+            assert store.snapshot()["users"]["bob"]["usage"]["daily"]["tokens"] == 0
+        finally:
+            release.set()
+        assert future.result(timeout=2).status_code == 200
+    assert admission.stats()["active_tokens"] == 0
+    assert admission.stats()["estimated_requests_per_second"] is not None

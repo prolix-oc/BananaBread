@@ -302,3 +302,11 @@ def test_rocm_embedding_backbone_selects_flash_by_capability(
     monkeypatch.setattr(native, "set_attn_implementation", select_backend)
     configure_embedding_attention(native, prefer_flash=True)
     assert native.config._attn_implementation == expected
+
+
+@pytest.mark.parametrize("value", [-1, 30001, True, 1.5, "100"])
+def test_invalid_admission_wait_is_rejected(monkeypatch, value):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    parsed = argparse.Namespace(**{**config.DEFAULTS, "inference_admission_wait_ms": value})
+    with pytest.raises(ValueError, match="inference_admission_wait_ms"):
+        config.validate_args(parsed)

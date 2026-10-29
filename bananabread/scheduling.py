@@ -25,6 +25,9 @@ class _Reservation:
     def reserve_tokens(self, tokens: int):
         self.admission.reserve_tokens(self, tokens)
 
+    async def wait_for_tokens(self, tokens: int, timeout_s: float):
+        await self.admission.wait_for_tokens(self, tokens, timeout_s)
+
 
 class InferenceAdmission:
     """Count admitted requests before accounting, decoding or executor submission."""
@@ -41,12 +44,16 @@ class InferenceAdmission:
         self.tokens = 0
         self.user_tokens: dict[str, int] = {}
         self.token_rate: float | None = None
+        self.request_rate: float | None = None
+        self.waiters: dict[asyncio.Future, asyncio.AbstractEventLoop] = {}
         self.lock = threading.Lock()
 
     def _overloaded(self):
-        # A bounded estimate of the current drain time, including a conservative
-        # request-count fallback before inference has produced a rate sample.
-        seconds = max(self.active * 0.1, self.tokens / (self.token_rate or 8192))
+        # Before the first sample, estimate known work only. A guessed fixed
+        # cost per request overstates small bursts and persists under warm load.
+        seconds = self.tokens / (self.token_rate or 8192)
+        if self.request_rate is not None:
+            seconds = max(seconds, self.active / self.request_rate)
         return HTTPException(
             status_code=429,
             detail="Inference capacity exceeded; retry later",
@@ -57,28 +64,68 @@ class InferenceAdmission:
         if tokens < 0:
             raise ValueError("tokens must be non-negative")
         with self.lock:
-            if reservation.closed or reservation.tokens:
-                raise RuntimeError("Invalid inference reservation")
-            weight = max(1, tokens)
-            user_tokens = self.user_tokens.get(reservation.username, 0)
-            # Keep large single requests supported, but never queue more work
-            # alongside one that exceeds the entire budget.
-            if (self.tokens and self.tokens + weight > self.max_tokens) or (
-                user_tokens and user_tokens + weight > self.per_user_tokens
-            ):
-                raise self._overloaded()
-            reservation.tokens = weight
-            self.tokens += weight
-            self.user_tokens[reservation.username] = user_tokens + weight
+            self._reserve_locked(reservation, tokens)
 
-    def observe(self, tokens: int, service_s: float, *, workers=1):
-        if tokens <= 0 or service_s <= 0:
+    def _reserve_locked(self, reservation, tokens):
+        if reservation.closed or reservation.tokens:
+            raise RuntimeError("Invalid inference reservation")
+        weight = max(1, tokens)
+        user_tokens = self.user_tokens.get(reservation.username, 0)
+        # Keep large single requests supported, but never queue more work
+        # alongside one that exceeds the entire budget.
+        if (self.tokens and self.tokens + weight > self.max_tokens) or (
+            user_tokens and user_tokens + weight > self.per_user_tokens
+        ):
+            raise self._overloaded()
+        reservation.tokens = weight
+        self.tokens += weight
+        self.user_tokens[reservation.username] = user_tokens + weight
+
+    async def wait_for_tokens(self, reservation, tokens, timeout_s):
+        if tokens < 0:
+            raise ValueError("tokens must be non-negative")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
+        while True:
+            with self.lock:
+                try:
+                    self._reserve_locked(reservation, tokens)
+                    return
+                except HTTPException:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise
+                    # Registration and capacity checking are atomic with release.
+                    future = loop.create_future()
+                    self.waiters[future] = loop
+            try:
+                await asyncio.wait_for(future, remaining)
+            except TimeoutError:
+                with self.lock:
+                    raise self._overloaded()
+            finally:
+                with self.lock:
+                    self.waiters.pop(future, None)
+
+    @staticmethod
+    def _wake(future):
+        if not future.done():
+            future.set_result(None)
+
+    def observe(self, tokens: int, service_s: float, *, workers=1, requests=1.0):
+        if service_s <= 0:
             return
-        rate = tokens * workers / service_s
         with self.lock:
-            self.token_rate = (
-                rate if self.token_rate is None else self.token_rate * 0.8 + rate * 0.2
-            )
+            if tokens > 0:
+                rate = tokens * workers / service_s
+                self.token_rate = (
+                    rate if self.token_rate is None else self.token_rate * 0.8 + rate * 0.2
+                )
+            if requests > 0:
+                rate = requests * workers / service_s
+                self.request_rate = (
+                    rate if self.request_rate is None else self.request_rate * 0.8 + rate * 0.2
+                )
 
     @contextmanager
     def slot(self, username: str):
@@ -102,6 +149,8 @@ class InferenceAdmission:
                     if not self.user_tokens[username]:
                         del self.user_tokens[username]
                 reservation.closed = True
+                for future, loop in self.waiters.items():
+                    loop.call_soon_threadsafe(self._wake, future)
 
     def stats(self):
         with self.lock:
@@ -115,6 +164,8 @@ class InferenceAdmission:
                 "max_tokens_per_user": self.per_user_tokens,
                 "user_tokens": dict(self.user_tokens),
                 "estimated_tokens_per_second": self.token_rate,
+                "estimated_requests_per_second": self.request_rate,
+                "waiting_requests": len(self.waiters),
             }
 
 
@@ -142,13 +193,25 @@ class EmbeddingScheduler:
     """
 
     def __init__(
-        self, executor, encode, *, workers=1, batch_size=8, max_tokens=8192, wait_ms=2, observe=None
+        self,
+        executor,
+        encode,
+        *,
+        workers=1,
+        batch_size=8,
+        max_tokens=8192,
+        wait_ms=10,
+        quiet_ms=2,
+        observe=None,
     ):
         self.executor = executor
         self.encode = encode
         self.batch_size = batch_size
         self.max_tokens = max_tokens
         self.wait_s = wait_ms / 1000
+        self.quiet_s = quiet_ms / 1000
+        self.last_arrival = 0.0
+        self.collectors: set[asyncio.Future] = set()
         self.observe = observe
         self.batches = 0
         self.encoded_inputs = 0
@@ -160,7 +223,14 @@ class EmbeddingScheduler:
 
     def _enqueue(self, request):
         self.ready.setdefault(request.username, deque()).append(request)
+        self.last_arrival = time.perf_counter()
+        self._notify_collectors()
         self.wake.set()
+
+    def _notify_collectors(self):
+        for future in self.collectors:
+            if not future.done():
+                future.set_result(None)
 
     def _remove(self, request):
         queue = self.ready.get(request.username)
@@ -168,6 +238,7 @@ class EmbeddingScheduler:
             queue.remove(request)
             if not queue:
                 del self.ready[request.username]
+            self._notify_collectors()
 
     async def submit(self, username, inputs, lengths, input_type, *, timing=None):
         if self.closed:
@@ -259,7 +330,31 @@ class EmbeddingScheduler:
                     count += len(request.inputs) - request.offset
                     if count >= self.batch_size:
                         return 0
-        return max(0, self.wait_s - (time.perf_counter() - first.submitted))
+        now = time.perf_counter()
+        delay = self.wait_s - (now - first.submitted)
+        if self.quiet_s:
+            delay = min(delay, self.quiet_s - (now - self.last_arrival))
+        return max(0, delay)
+
+    async def _collect(self):
+        waited = False
+        while self.ready and not self.closed:
+            delay = self._collection_delay()
+            if not delay:
+                return
+            if not waited:
+                self.collection_waits += 1
+                waited = True
+            future = asyncio.get_running_loop().create_future()
+            self.collectors.add(future)
+            try:
+                # New arrivals wake collection immediately: a full batch need
+                # not wait for a timer, and a trickle may extend only to the cap.
+                await asyncio.wait_for(future, delay)
+            except TimeoutError:
+                pass
+            finally:
+                self.collectors.discard(future)
 
     def stats(self):
         requests = [request for queue in self.ready.values() for request in queue]
@@ -278,10 +373,7 @@ class EmbeddingScheduler:
                     return
                 self.wake.clear()
                 await self.wake.wait()
-            delay = self._collection_delay()
-            if delay:
-                self.collection_waits += 1
-                await asyncio.sleep(delay)
+            await self._collect()
             if not self.ready:
                 continue
             selected, inputs, input_type = self._batch()
@@ -299,8 +391,10 @@ class EmbeddingScheduler:
                     for request, count in selected
                     for length in request.lengths[request.offset - count : request.offset]
                 ]
-                if self.observe is not None and all(length is not None for length in lengths):
-                    self.observe(sum(lengths), timing.work_s)
+                if self.observe is not None:
+                    work = sum(lengths) if all(length is not None for length in lengths) else 0
+                    equivalents = sum(count / len(request.inputs) for request, count in selected)
+                    self.observe(work, timing.work_s, requests=equivalents)
                 self.batches += 1
                 self.encoded_inputs += len(inputs)
             except Exception as exc:
@@ -330,4 +424,5 @@ class EmbeddingScheduler:
         self.closed = True
         # Drain admitted work before the executors/models are torn down.
         self.wake.set()
+        self._notify_collectors()
         await asyncio.gather(*self.tasks)

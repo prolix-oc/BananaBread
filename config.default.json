@@ -29,11 +29,12 @@
     "embedding_dim": 1024,
     "embedding_batch_size": 8,
     "embedding_batch_max_tokens": 8192,
-    "embedding_batch_wait_ms": 2,
+    "embedding_batch_wait_ms": 10,
     "inference_max_requests": 64,
     "inference_max_requests_per_user": 8,
     "inference_max_tokens": 65536,
     "inference_max_tokens_per_user": 32768,
+    "inference_admission_wait_ms": 0,
     "embedding_flash_attention": false,
 
     "use_cores": null,

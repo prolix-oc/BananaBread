@@ -260,6 +260,12 @@ def count_usage_tokens(texts: List[str], *, timing: ExecutionTiming | None = Non
 async def consume_user_tokens(
     username: str, texts: List[str], *, timing: ExecutionTiming | None = None, reservation=None
 ) -> int:
+    if args.inference_admission_wait_ms and reservation is not None:
+        tokens = await run_in_threadpool_with_executor(
+            general_executor, lambda: count_usage_tokens(texts, timing=timing), timing=timing
+        )
+        await consume_after_capacity_wait(username, tokens, reservation)
+        return tokens
     # Tokenizers and tenant accounting both acquire threading locks. Inference
     # can hold the tokenizer lock for an entire batch, so neither belongs on the
     # event loop. Use the general pool so accounting does not queue behind GPU work.
@@ -272,6 +278,15 @@ async def consume_user_tokens(
 
     return await run_in_threadpool_with_executor(
         general_executor, count_and_consume, timing=timing
+    )
+
+
+async def consume_after_capacity_wait(username, tokens, reservation):
+    # Waiting holds the existing request slot, so this queue is bounded by the
+    # same global/per-user request caps. No worker thread is occupied by a wait.
+    await reservation.wait_for_tokens(tokens, args.inference_admission_wait_ms / 1000)
+    await run_in_threadpool_with_executor(
+        general_executor, tenant_store.check_and_consume, username, tokens
     )
 
 
@@ -323,8 +338,8 @@ async def lifespan(app: FastAPI):
         embedding_executor, encode_scheduled_batch, workers=EMBEDDING_THREADS,
         batch_size=args.embedding_batch_size, max_tokens=args.embedding_batch_max_tokens,
         wait_ms=args.embedding_batch_wait_ms,
-        observe=lambda tokens, duration: inference_admission.observe(
-            tokens, duration, workers=EMBEDDING_THREADS
+        observe=lambda tokens, duration, requests: inference_admission.observe(
+            tokens, duration, workers=EMBEDDING_THREADS, requests=requests
         ),
     )
     try:
@@ -548,6 +563,8 @@ async def embedding_endpoint(
         def prepare_and_consume():
             decoded, descriptions = prepare_inputs(inputs, model)
             tokens = count_input_tokens(decoded, model, timing=account_timing)
+            if args.inference_admission_wait_ms and auth.get("_reservation") is not None:
+                return decoded, descriptions, tokens
             if auth.get("_reservation") is not None:
                 auth["_reservation"].reserve_tokens(tokens)
             tenant_store.check_and_consume(auth["username"], tokens)
@@ -557,6 +574,8 @@ async def embedding_endpoint(
             prepared_inputs, log_inputs, prompt_tokens = await run_in_threadpool_with_executor(
                 general_executor, prepare_and_consume, timing=account_timing
             )
+            if args.inference_admission_wait_ms and auth.get("_reservation") is not None:
+                await consume_after_capacity_wait(auth["username"], prompt_tokens, auth["_reservation"])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     else:

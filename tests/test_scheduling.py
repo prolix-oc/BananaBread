@@ -352,3 +352,193 @@ async def test_media_later_in_a_request_does_not_block_packing_its_text_prefix()
             assert second[:, 0].tolist() == [3]
         finally:
             await scheduler.close()
+
+
+def test_warmed_small_request_retry_has_no_fixed_seven_second_floor():
+    from contextlib import ExitStack
+
+    admission = InferenceAdmission(64, 8)
+    with ExitStack() as stack:
+        for i in range(64):
+            reservation = stack.enter_context(admission.slot(str(i)))
+            reservation.reserve_tokens(60)
+        # First actual batch seeds both work and request throughput.
+        admission.observe(480, 0.024, requests=8)
+        with pytest.raises(HTTPException) as exc:
+            with admission.slot("overflow"):
+                pytest.fail("request cap")
+        assert exc.value.headers["Retry-After"] == "1"
+        assert admission.stats()["estimated_requests_per_second"] > 300
+
+
+@pytest.mark.asyncio
+async def test_staggered_singles_collect_until_full_or_quiet():
+    calls = []
+
+    def encode(inputs, kind, timing):
+        calls.append(inputs)
+        return np.ones((len(inputs), 2))
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        scheduler = EmbeddingScheduler(executor, encode, wait_ms=500, quiet_ms=100)
+        tasks = []
+        try:
+            # Gaps are shorter than the quiet period; filling the batch wakes
+            # the worker without paying the full half-second collection cap.
+            for i in range(8):
+                tasks.append(asyncio.create_task(scheduler.submit(str(i), [i], [1], "document")))
+                await asyncio.sleep(0.01)
+            await asyncio.wait_for(asyncio.gather(*tasks), 0.3)
+            assert calls == [list(range(8))]
+        finally:
+            await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_partial_collection_flushes_on_quiet_without_waiting_for_cap():
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        scheduler = EmbeddingScheduler(
+            executor,
+            lambda inputs, *args: np.ones((len(inputs), 2)),
+            wait_ms=1000,
+            quiet_ms=10,
+        )
+        try:
+            await asyncio.wait_for(scheduler.submit("a", [1], [1], "document"), 0.5)
+            assert scheduler.stats()["batches"] == 1
+            assert scheduler.stats()["collection_waits"] == 1
+        finally:
+            await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_collection_cap_cannot_be_extended_by_continuous_arrivals():
+    encoded = asyncio.Event()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        loop = asyncio.get_running_loop()
+
+        def encode(inputs, *args):
+            loop.call_soon_threadsafe(encoded.set)
+            return np.ones((len(inputs), 2))
+
+        scheduler = EmbeddingScheduler(executor, encode, batch_size=1000, wait_ms=50, quiet_ms=1000)
+        tasks = []
+        stop = asyncio.Event()
+
+        async def produce():
+            for i in range(30):
+                if stop.is_set():
+                    return
+                tasks.append(asyncio.create_task(scheduler.submit(str(i), [i], [1], "document")))
+                await asyncio.sleep(0.01)
+
+        producer = asyncio.create_task(produce())
+        try:
+            # The cap must flush while arrivals are still extending quiet time.
+            await asyncio.wait_for(encoded.wait(), 0.5)
+            assert not producer.done()
+        finally:
+            stop.set()
+            await producer
+            await asyncio.wait_for(asyncio.gather(*tasks), 1)
+            await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_admission_wait_is_bounded_by_request_slots_and_wakes_on_release():
+    admission = InferenceAdmission(2, 1, max_tokens=1)
+    reserved = asyncio.Event()
+    release = asyncio.Event()
+
+    async def busy():
+        with admission.slot("busy") as reservation:
+            reservation.reserve_tokens(1)
+            reserved.set()
+            await release.wait()
+
+    async def queued():
+        with admission.slot("queued") as reservation:
+            await reservation.wait_for_tokens(1, 1)
+            assert admission.stats()["active_tokens"] == 1
+
+    busy_task = asyncio.create_task(busy())
+    await reserved.wait()
+    queued_task = asyncio.create_task(queued())
+    await asyncio.sleep(0)
+    assert admission.stats()["waiting_requests"] == 1
+    with pytest.raises(HTTPException):
+        with admission.slot("overflow"):
+            pytest.fail("waiting must not bypass request limits")
+    release.set()
+    await asyncio.wait_for(asyncio.gather(busy_task, queued_task), 1)
+    assert admission.stats()["active_requests"] == 0
+    assert admission.stats()["active_tokens"] == 0
+    assert admission.stats()["waiting_requests"] == 0
+
+
+@pytest.mark.asyncio
+async def test_admission_wait_times_out_and_cancellation_removes_waiter():
+    admission = InferenceAdmission(3, 1, max_tokens=1)
+
+    async def queued(username, timeout):
+        with admission.slot(username) as reservation:
+            await reservation.wait_for_tokens(1, timeout)
+
+    with admission.slot("busy") as busy:
+        busy.reserve_tokens(1)
+        with pytest.raises(HTTPException) as exc:
+            await asyncio.wait_for(queued("timeout", 0.01), 1)
+        assert exc.value.status_code == 429
+        task = asyncio.create_task(queued("cancel", 1))
+        await asyncio.sleep(0)
+        assert admission.stats()["waiting_requests"] == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert admission.stats()["waiting_requests"] == 0
+        assert admission.stats()["active_requests"] == 1
+        assert admission.stats()["active_tokens"] == 1
+    assert admission.stats()["active_tokens"] == 0
+
+
+def test_cold_small_request_burst_does_not_inherit_a_fixed_depth_delay():
+    from contextlib import ExitStack
+
+    admission = InferenceAdmission(64, 8)
+    with ExitStack() as stack:
+        for i in range(64):
+            reservation = stack.enter_context(admission.slot(str(i)))
+            reservation.reserve_tokens(60)
+        with pytest.raises(HTTPException) as exc:
+            with admission.slot("overflow"):
+                pytest.fail("request cap")
+        assert exc.value.headers["Retry-After"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_rate_samples_count_a_split_request_once_across_its_batches():
+    observations = []
+
+    def observe(tokens, duration, requests):
+        observations.append(requests)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        scheduler = EmbeddingScheduler(
+            executor,
+            lambda inputs, *args: np.ones((len(inputs), 2)),
+            wait_ms=0,
+            observe=observe,
+        )
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    scheduler.submit("small", [1], [1], "document"),
+                    scheduler.submit("large", list(range(16)), [1] * 16, "document"),
+                ),
+                1,
+            )
+            assert sum(observations) == 2
+            assert scheduler.stats()["batches"] == 3
+        finally:
+            await scheduler.close()

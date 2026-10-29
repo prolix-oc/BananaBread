@@ -163,11 +163,12 @@ DEFAULTS = {
     "embedding_dim": 1024,
     "embedding_batch_size": 8,
     "embedding_batch_max_tokens": 8192,
-    "embedding_batch_wait_ms": 2,
+    "embedding_batch_wait_ms": 10,
     "inference_max_requests": 64,
     "inference_max_requests_per_user": 8,
     "inference_max_tokens": 65536,
     "inference_max_tokens_per_user": 32768,
+    "inference_admission_wait_ms": 0,
     "embedding_flash_attention": False,
     "cuda_cache_ttl": 300,
     "cuda_min_clear_interval": 60,
@@ -414,6 +415,11 @@ def validate_args(parsed_args):
         raise ValueError("embedding_batch_wait_ms must be an integer between 0 and 1000")
     parsed_args.embedding_batch_wait_ms = wait_ms
 
+    admission_wait_ms = getattr(parsed_args, "inference_admission_wait_ms", 0)
+    if type(admission_wait_ms) is not int or not 0 <= admission_wait_ms <= 30000:
+        raise ValueError("inference_admission_wait_ms must be an integer between 0 and 30000")
+    parsed_args.inference_admission_wait_ms = admission_wait_ms
+
     if parsed_args.embedding_model == "embeddinggemma":
         # The shared 1024d default belongs to MixedBread; Gemma's native size is 768d.
         if parsed_args.embedding_dim == DEFAULTS["embedding_dim"]:
@@ -574,7 +580,7 @@ def parse_args():
     parser.add_argument("--embedding-batch-max-tokens", type=int, default=DEFAULTS["embedding_batch_max_tokens"],
                        help="Maximum padded tokens per embedding batch; longer inputs run alone (default: 8192)")
     parser.add_argument("--embedding-batch-wait-ms", type=int, default=DEFAULTS["embedding_batch_wait_ms"],
-                       help="Maximum collection delay for cross-request embedding batches (default: 2 ms)")
+                       help="Maximum adaptive collection delay; flushes after 2 ms quiet (default: 10 ms)")
     parser.add_argument("--inference-max-requests", type=int, default=DEFAULTS["inference_max_requests"],
                        help="Maximum admitted inference requests, including queued requests (default: 64)")
     parser.add_argument("--inference-max-requests-per-user", type=int, default=DEFAULTS["inference_max_requests_per_user"],
@@ -583,6 +589,8 @@ def parse_args():
                        help="Maximum outstanding input-token work per process (default: 65536)")
     parser.add_argument("--inference-max-tokens-per-user", type=int, default=DEFAULTS["inference_max_tokens_per_user"],
                        help="Maximum outstanding input-token work per user (default: 32768)")
+    parser.add_argument("--inference-admission-wait-ms", type=int, default=DEFAULTS["inference_admission_wait_ms"],
+                       help="Wait for token capacity before returning 429; 0 rejects immediately (default: 0; max: 30000)")
     parser.add_argument("--embedding-flash-attention", action='store_true', default=DEFAULTS["embedding_flash_attention"],
                        help="Prefer FlashAttention 2 for compatible embedding encoders (requires flash_attn)")
     parser.add_argument("--log-embeddings", action='store_true', default=DEFAULTS.get("log_embeddings"),

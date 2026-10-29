@@ -569,3 +569,26 @@ def test_unused_cache_space_can_be_borrowed_until_another_tenant_arrives():
     cache.set("second", "1", value)
     assert cache.stats()["users"]["first"]["entries"] == 2
     assert cache.stats()["users"]["second"]["entries"] == 2
+
+
+def test_two_gib_cache_pressure_protects_smaller_tenants_from_one_heavy_writer(monkeypatch):
+    import bananabread.cache as cache_module
+
+    # Simulate retained sizes at the actual deployment budget without allocating
+    # two GiB of vectors. All lookup/eviction/accounting paths remain real.
+    mib = 1024**2
+    budget = 2048 * mib
+    monkeypatch.setattr(cache_module, "get_cache_size", lambda value: value["bytes"])
+    cache = UserScopedCache(budget)
+    cache.configure(scope="per_user")
+    for i in range(16):
+        cache.set(str(i), "quiet", {"bytes": 64 * mib})
+    for i in range(100):
+        cache.set("heavy", str(i), {"bytes": 128 * mib})
+        assert cache.total_size() <= budget
+        assert all(cache.get(str(user), "quiet") is not None for user in range(16))
+    # Even a single result the size of the aggregate cannot flush the others:
+    # the writer reclaims its own entries, including this uncacheable result.
+    cache.set("heavy", "giant", {"bytes": budget})
+    assert all(cache.get(str(user), "quiet") is not None for user in range(16))
+    assert cache.total_size() == 1024 * mib

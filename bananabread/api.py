@@ -121,7 +121,8 @@ QUANT_THREADS = max(2, CPU_COUNT // 4)
 quant_executor = ThreadPoolExecutor(max_workers=QUANT_THREADS, thread_name_prefix="quant")
 logger.info(f"  - Quantization threads: {QUANT_THREADS}")
 inference_admission = InferenceAdmission(
-    args.inference_max_requests, args.inference_max_requests_per_user
+    args.inference_max_requests, args.inference_max_requests_per_user,
+    max_tokens=args.inference_max_tokens, per_user_tokens=args.inference_max_tokens_per_user,
 )
 
 # ----- Caches -----
@@ -213,8 +214,8 @@ def get_api_user(api_key: str | None = Depends(get_api_key)):
     return {"api_key": api_key, "username": username}
 
 async def get_inference_user(auth: dict = Depends(get_api_user)):
-    with inference_admission.slot(auth["username"]):
-        yield auth
+    with inference_admission.slot(auth["username"]) as reservation:
+        yield {**auth, "_reservation": reservation}
 
 def get_management_key(request: Request, authorization: str = Header(None)):
     # Try Bearer token first
@@ -257,13 +258,15 @@ def count_usage_tokens(texts: List[str], *, timing: ExecutionTiming | None = Non
         return count_text_tokens(texts, tokenizer)
 
 async def consume_user_tokens(
-    username: str, texts: List[str], *, timing: ExecutionTiming | None = None
+    username: str, texts: List[str], *, timing: ExecutionTiming | None = None, reservation=None
 ) -> int:
     # Tokenizers and tenant accounting both acquire threading locks. Inference
     # can hold the tokenizer lock for an entire batch, so neither belongs on the
     # event loop. Use the general pool so accounting does not queue behind GPU work.
     def count_and_consume():
         tokens = count_usage_tokens(texts, timing=timing)
+        if reservation is not None:
+            reservation.reserve_tokens(tokens)
         tenant_store.check_and_consume(username, tokens)
         return tokens
 
@@ -277,7 +280,7 @@ def encode_scheduled_batch(inputs, input_type, timing):
         models_manager.embedding_model_pool.get_model()
         if models_manager.embedding_model_pool else models_manager.embedding_model
     )
-    return encode_inputs(model, inputs, input_type, timing=timing)
+    return encode_inputs(model, inputs, input_type, timing=timing, planned_batch=True)
 
 
 async def schedule_embeddings(username, inputs, input_type="document", *, timing=None):
@@ -320,6 +323,9 @@ async def lifespan(app: FastAPI):
         embedding_executor, encode_scheduled_batch, workers=EMBEDDING_THREADS,
         batch_size=args.embedding_batch_size, max_tokens=args.embedding_batch_max_tokens,
         wait_ms=args.embedding_batch_wait_ms,
+        observe=lambda tokens, duration: inference_admission.observe(
+            tokens, duration, workers=EMBEDDING_THREADS
+        ),
     )
     try:
         yield
@@ -445,7 +451,9 @@ async def rerank_endpoint(
         raise HTTPException(status_code=400, detail="Query or documents must be provided")
 
     t_start = time.perf_counter()
-    await consume_user_tokens(auth["username"], [request.query, *request.documents])
+    prompt_tokens = await consume_user_tokens(
+        auth["username"], [request.query, *request.documents], reservation=auth.get("_reservation")
+    )
 
     key = get_rerank_cache_key(request.query, request.documents, request.top_k, request.return_documents, request.task_description)
     cached = rerank_cache.get(auth["username"], key)
@@ -471,6 +479,7 @@ async def rerank_endpoint(
             return model.rank(query, documents, return_documents=return_documents, top_k=top_k)
 
     t_rank = time.perf_counter()
+    rank_timing = ExecutionTiming()
     # Use dedicated rerank threadpool
     result = await run_in_threadpool_with_executor(
         rerank_executor,
@@ -479,8 +488,10 @@ async def rerank_endpoint(
         request.documents,
         request.return_documents,
         request.top_k,
-        request.task_description
+        request.task_description,
+        timing=rank_timing,
     )
+    inference_admission.observe(prompt_tokens, rank_timing.work_s, workers=RERANK_THREADS)
     rank_s = time.perf_counter() - t_rank
 
     # Clear CUDA cache immediately after inference if using GPU
@@ -537,6 +548,8 @@ async def embedding_endpoint(
         def prepare_and_consume():
             decoded, descriptions = prepare_inputs(inputs, model)
             tokens = count_input_tokens(decoded, model, timing=account_timing)
+            if auth.get("_reservation") is not None:
+                auth["_reservation"].reserve_tokens(tokens)
             tenant_store.check_and_consume(auth["username"], tokens)
             return decoded, descriptions, tokens
 
@@ -548,7 +561,9 @@ async def embedding_endpoint(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     else:
         prepared_inputs, log_inputs = inputs, inputs
-        prompt_tokens = await consume_user_tokens(auth["username"], inputs, timing=account_timing)
+        prompt_tokens = await consume_user_tokens(
+            auth["username"], inputs, timing=account_timing, reservation=auth.get("_reservation")
+        )
     account_s = time.perf_counter() - t_account
 
     logger.info(
@@ -761,7 +776,7 @@ async def encode_ollama_embeddings(inputs: str | list[str] | None, auth: dict):
         inputs = [inputs]
     if get_embedding_model_for_token_count() is None:
         raise HTTPException(status_code=503, detail="Embedding model is not loaded")
-    prompt_tokens = await consume_user_tokens(auth["username"], inputs)
+    prompt_tokens = await consume_user_tokens(auth["username"], inputs, reservation=auth.get("_reservation"))
 
     logger.info(f"📄 Processing {len(inputs)} documents for Ollama embeddings")
 
@@ -814,7 +829,7 @@ async def llamacpp_embedding_endpoint(request: LlamaCppEmbeddingRequest, auth: d
             is_batch = True
         if get_embedding_model_for_token_count() is None:
             raise HTTPException(status_code=503, detail="Embedding model is not loaded")
-        await consume_user_tokens(auth["username"], inputs)
+        await consume_user_tokens(auth["username"], inputs, reservation=auth.get("_reservation"))
             
         logger.info(f"📄 Processing {len(inputs)} document(s) for Llama.cpp embeddings")
         
@@ -908,6 +923,7 @@ async def memory_usage(api_key: str = Depends(get_management_key)):
     data["classification_threads"] = CLASSIFICATION_THREADS
     data["general_threads"] = GENERAL_THREADS
     data["inference_admission"] = inference_admission.stats()
+    data["embedding_scheduler"] = app.state.embedding_scheduler.stats()
     
     data["cuda_cache_manager"] = cuda_cache_manager.get_stats()
     

@@ -97,7 +97,8 @@ def test_raw_torch_and_onnx_tokenizers_use_the_same_batch_limits():
 
 
 @pytest.mark.parametrize("key", ["embedding_batch_size", "embedding_batch_max_tokens",
-                                "inference_max_requests", "inference_max_requests_per_user"])
+                                "inference_max_requests", "inference_max_requests_per_user",
+                                "inference_max_tokens", "inference_max_tokens_per_user"])
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "8"])
 def test_invalid_batch_config_is_rejected(monkeypatch, key, value):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)

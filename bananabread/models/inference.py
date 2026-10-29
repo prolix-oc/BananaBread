@@ -183,15 +183,20 @@ def embedding_batches(model, inputs, input_type, *, batch_size, max_tokens):
         yield batch
 
 
-def encode_in_batches(model, inputs, input_type, *, batch_size, max_tokens):
+def encode_batch(model, batch, input_type):
+    """Encode an already planned batch without tokenizing it again to plan it."""
     encode = getattr(model, "encode_query", None) if input_type == "query" else None
     encode = encode or model.encode
+    output = encode(batch, batch_size=len(batch), show_progress_bar=False)
+    if isinstance(output, torch.Tensor):
+        output = output.detach().float().cpu().numpy()
+    return np.asarray(output)
+
+
+def encode_in_batches(model, inputs, input_type, *, batch_size, max_tokens):
     outputs = []
     for batch in embedding_batches(
         model, inputs, input_type, batch_size=batch_size, max_tokens=max_tokens
     ):
-        output = encode(batch, batch_size=len(batch), show_progress_bar=False)
-        if isinstance(output, torch.Tensor):
-            output = output.detach().float().cpu().numpy()
-        outputs.append(output)
+        outputs.append(encode_batch(model, batch, input_type))
     return np.concatenate(outputs, axis=0) if outputs else np.empty((0, 0), dtype=np.float32)

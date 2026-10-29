@@ -397,6 +397,7 @@ def test_ollama_and_uncached_openai_use_the_same_document_inference(client, monk
     import bananabread.api as api
 
     monkeypatch.setattr(api.args, "embedding_batch_size", 2)
+    monkeypatch.setattr(api.app.state.embedding_scheduler, "batch_size", 2)
     vectors = {"first": [1.0, 0.0], "second": [0.0, 1.0], "third": [-1.0, 0.0]}
 
     def encode(texts, **kwargs):
@@ -435,6 +436,8 @@ def test_all_embedding_routes_obey_shared_batch_limits(client, monkeypatch, rout
 
     monkeypatch.setattr(api.args, "embedding_batch_size", 2)
     monkeypatch.setattr(api.args, "embedding_batch_max_tokens", 8)
+    monkeypatch.setattr(api.app.state.embedding_scheduler, "batch_size", 2)
+    monkeypatch.setattr(api.app.state.embedding_scheduler, "max_tokens", 8)
     texts = ["first", "second", "third", "fourth", "fifth"]
     response = transport.post(route, json={"model": "test/multimodal", field: texts})
     assert response.status_code == 200, response.text

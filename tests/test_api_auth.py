@@ -445,3 +445,87 @@ def test_simultaneous_http_requests_share_batches_without_mixing_tenant_results(
     assert users["alice"]["usage"]["daily"]["tokens"] == 4
     assert users["bob"]["usage"]["daily"]["tokens"] == 4
     assert api.inference_admission.stats()["active_requests"] == 0
+
+
+@pytest.mark.parametrize("route,field,value", [
+    ("/v1/embeddings", "input", "hello"),
+    ("/v1/embeddings", "input", {"text": "hello"}),
+    ("/v0/embeddings", "input", "hello"),
+    ("/api/v0/embeddings", "input", "hello"),
+    ("/api/embed", "input", "hello"),
+    ("/api/embeddings", "prompt", "hello"),
+    ("/embedding", "content", "hello"),
+    ("/v1/rerank", "documents", ["hello"]),
+])
+def test_token_work_overflow_is_not_charged_on_any_user_route(api_client, monkeypatch, route, field, value):
+    from bananabread.scheduling import InferenceAdmission
+
+    api, client, store, model = api_client
+    admission = InferenceAdmission(64, 8, max_tokens=4, per_user_tokens=4)
+    monkeypatch.setattr(api, "inference_admission", admission)
+    payload = {field: value, "model": "test/auth", "query": "hello"}
+    with admission.slot("busy") as busy:
+        busy.reserve_tokens(4)
+        response = client.post(route, json=payload, headers={"Authorization": "Bearer alice-key"})
+        assert response.status_code == 429, response.text
+        assert int(response.headers["Retry-After"]) >= 1
+        assert admission.stats()["active_tokens"] == 4
+        assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 0
+    response = client.post(route, json=payload, headers={"Authorization": "Bearer alice-key"})
+    assert response.status_code == 200, response.text
+    assert admission.stats()["active_tokens"] == 0
+    assert admission.stats()["active_requests"] == 0
+
+
+def test_scheduled_encoding_does_not_repeat_batch_planning(api_client, monkeypatch):
+    api, client, store, model = api_client
+    planned = []
+
+    def preprocess(inputs):
+        planned.extend(inputs)
+        return {"input_ids": np.zeros((1, 1))}
+
+    monkeypatch.setattr(model, "preprocess", preprocess, raising=False)
+    inputs = [f"document {i}" for i in range(20)]
+    response = client.post("/v1/embeddings", json={"input": inputs},
+                           headers={"Authorization": "Bearer alice-key"})
+    assert response.status_code == 200, response.text
+    assert planned == inputs
+    assert model.calls == 3
+
+
+@pytest.mark.parametrize("global_budget,user_budget", [(1, 100), (100, 1)])
+def test_parallel_token_reservations_enforce_budget_before_charging(api_client, monkeypatch, global_budget, user_budget):
+    from concurrent.futures import as_completed
+    from bananabread.scheduling import InferenceAdmission
+
+    api, client, store, model = api_client
+    admission = InferenceAdmission(64, 8, max_tokens=global_budget, per_user_tokens=user_budget)
+    monkeypatch.setattr(api, "inference_admission", admission)
+    barrier = threading.Barrier(2)
+    release = threading.Event()
+    original_count = api.count_usage_tokens
+    original_encode = model.encode
+
+    def count(*args, **kwargs):
+        tokens = original_count(*args, **kwargs)
+        barrier.wait(timeout=3)
+        return tokens
+
+    def encode(*args, **kwargs):
+        assert release.wait(3)
+        return original_encode(*args, **kwargs)
+
+    monkeypatch.setattr(api, "count_usage_tokens", count)
+    monkeypatch.setattr(model, "encode", encode)
+    with ThreadPoolExecutor(max_workers=2) as clients:
+        futures = [clients.submit(client.post, "/v1/embeddings", json={"input": "hello"},
+                                  headers={"Authorization": "Bearer alice-key"}) for _ in range(2)]
+        try:
+            first = next(as_completed(futures, timeout=2)).result()
+            assert first.status_code == 429, first.text
+            assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 1
+        finally:
+            release.set()
+        assert sorted(f.result(timeout=2).status_code for f in futures) == [200, 429]
+    assert admission.stats()["active_tokens"] == 0

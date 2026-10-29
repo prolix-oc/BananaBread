@@ -17,7 +17,7 @@ from PIL import Image, UnidentifiedImageError
 
 from bananabread.schemas import MediaBody, MultimodalInput
 from bananabread.config import args
-from bananabread.models.inference import encode_in_batches
+from bananabread.models.inference import encode_batch, encode_in_batches
 from bananabread.tenancy import count_text_tokens
 from bananabread.utils import ExecutionTiming, timed_lock
 
@@ -191,9 +191,12 @@ def count_input_tokens(
 
 
 def encode_inputs(
-    model: Any, inputs: list[Any], input_type: str, *, timing: ExecutionTiming | None = None
+    model: Any, inputs: list[Any], input_type: str, *, timing: ExecutionTiming | None = None,
+    planned_batch: bool = False,
 ) -> Any:
     with timed_lock(getattr(model, "tokenizer_lock", None), timing):
+        if planned_batch:
+            return encode_batch(model, inputs, input_type)
         return encode_in_batches(
             model, inputs, input_type,
             batch_size=args.embedding_batch_size, max_tokens=args.embedding_batch_max_tokens,

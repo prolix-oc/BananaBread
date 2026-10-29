@@ -537,3 +537,35 @@ def test_rerank_cache_budget_includes_returned_document_bodies():
     cache = UserScopedCache(4096)
     cache.set("alice", "huge", [{"index": 0, "relevance_score": 1.0, "document": "x" * 10000}])
     assert cache.get("alice", "huge") is None
+
+
+def test_busy_cache_tenant_cannot_evict_small_tenants_entries():
+    from bananabread.cache import get_cache_size
+
+    value = "x" * 100
+    size = get_cache_size(value)
+    cache = UserScopedCache(size * 4)
+    cache.configure(scope="per_user")
+    cache.set("quiet", "key", value)
+    for i in range(20):
+        cache.set("busy", str(i), value)
+        assert cache.get("quiet", "key") == value
+        assert cache.total_size() <= size * 4
+    assert cache.stats()["users"]["busy"]["entries"] == 3
+    assert cache.stats()["fair_share"] == size * 2
+
+
+def test_unused_cache_space_can_be_borrowed_until_another_tenant_arrives():
+    from bananabread.cache import get_cache_size
+
+    value = "x" * 100
+    size = get_cache_size(value)
+    cache = UserScopedCache(size * 4)
+    cache.configure(scope="per_user")
+    for i in range(4):
+        cache.set("first", str(i), value)
+    assert cache.stats()["users"]["first"]["entries"] == 4
+    cache.set("second", "0", value)
+    cache.set("second", "1", value)
+    assert cache.stats()["users"]["first"]["entries"] == 2
+    assert cache.stats()["users"]["second"]["entries"] == 2

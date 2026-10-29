@@ -386,7 +386,15 @@ class UserScopedCache:
             while self.sizes.get(user, 0) > self._limit_locked(user):
                 self._remove_locked(next(iter(self.recency[user])))
         while self.current_size > self.global_limit_bytes and self.entries:
-            self._remove_locked(next(iter(self.entries)))
+            if self.scope == "per_user":
+                # Unused shares can be borrowed. Under pressure reclaim from
+                # the largest tenant first, preserving smaller tenants' entries.
+                # Global recency breaks ties; each tenant retains LRU ordering.
+                largest = max(self.sizes.values())
+                victim = next(key for key in self.entries if self.sizes[key[0]] == largest)
+            else:
+                victim = next(iter(self.entries))
+            self._remove_locked(victim)
 
     def clear(self):
         with self.lock:
@@ -412,6 +420,10 @@ class UserScopedCache:
                 "scope": self.scope,
                 "aggregate_limit": self.global_limit_bytes,
                 "current_size": self.current_size,
+                "fair_share": (
+                    self.global_limit_bytes // max(1, len(self.sizes))
+                    if self.scope == "per_user" else self.global_limit_bytes
+                ),
                 "global": namespace_stats(None),
                 "users": {
                     user: namespace_stats(user) for user in counts if user is not None

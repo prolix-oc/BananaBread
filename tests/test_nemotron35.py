@@ -319,6 +319,14 @@ def test_native_mistral3_text_image_pipeline_without_downloads(tmp_path):
     query = encode_inputs(model, ["hello"], "query")
     assert query.shape == (1, 16)
     assert not np.allclose(query[0], output[0])
+    # The scheduler's preplanned path must retain native prompts and FP32
+    # conversion while avoiding a second planning pass.
+    np.testing.assert_allclose(
+        encode_inputs(model, ["hello"], "document", planned_batch=True), output[:1], atol=1e-6
+    )
+    np.testing.assert_allclose(
+        encode_inputs(model, ["hello"], "query", planned_batch=True), query, atol=1e-6
+    )
     # Compare to the untruncated native pipeline to verify truncation precedes normalization.
     full = saved.encode_document(["hello"], show_progress_bar=False)
     expected = full[:, :16] / np.linalg.norm(full[:, :16], axis=1, keepdims=True)

@@ -158,7 +158,8 @@ async def test_cancellation_keeps_capacity_reserved_until_thread_finishes(schedu
         scheduler = EmbeddingScheduler(executor, encode, wait_ms=0)
 
         async def work():
-            with admission.slot("a"):
+            with admission.slot("a") as reservation:
+                reservation.reserve_tokens(100)
                 if scheduled:
                     await scheduler.submit("a", [1, 2], [None, None], "document")
                 else:
@@ -170,6 +171,7 @@ async def test_cancellation_keeps_capacity_reserved_until_thread_finishes(schedu
             task.cancel()
             await asyncio.sleep(0)
             assert admission.stats()["active_requests"] == 1
+            assert admission.stats()["active_tokens"] == 100
             with pytest.raises(HTTPException) as exc:
                 with admission.slot("b"):
                     pytest.fail("Capacity should still be reserved")
@@ -178,6 +180,7 @@ async def test_cancellation_keeps_capacity_reserved_until_thread_finishes(schedu
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(task, 2)
             assert admission.stats()["active_requests"] == 0
+            assert admission.stats()["active_tokens"] == 0
             assert not scheduler.ready
         finally:
             release.set()
@@ -234,4 +237,118 @@ async def test_multiple_workers_overlap_without_reordering_a_request():
             assert all(result[:, 0].tolist() == list(range(6)) for result in results)
         finally:
             release.set()
+            await scheduler.close()
+
+
+@pytest.mark.parametrize("blocker_kind,blocker_length", [("query", 4), ("document", 9)])
+@pytest.mark.asyncio
+async def test_packing_scans_past_an_incompatible_or_nonfitting_tenant(
+    blocker_kind, blocker_length
+):
+    calls = []
+
+    def encode(inputs, kind, timing):
+        calls.append((inputs, kind))
+        return np.array([[value, 1] for value in inputs])
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        scheduler = EmbeddingScheduler(executor, encode, batch_size=8, max_tokens=8, wait_ms=0)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    scheduler.submit("a", [1], [4], "document"),
+                    scheduler.submit("b", [2], [blocker_length], blocker_kind),
+                    scheduler.submit("c", [3], [4], "document"),
+                ),
+                2,
+            )
+            assert calls == [([1, 3], "document"), ([2], blocker_kind)]
+            assert [result.tolist() for result in results] == [[[i, 1]] for i in range(1, 4)]
+        finally:
+            await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_bulk_request_skips_collection_on_all_its_batches():
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        scheduler = EmbeddingScheduler(
+            executor,
+            lambda inputs, *args: np.ones((len(inputs), 2)),
+            batch_size=8,
+            wait_ms=1000,
+        )
+        try:
+            # A one-second window makes an accidental collection wait observable
+            # without comparing small timing differences on a loaded machine.
+            await asyncio.wait_for(scheduler.submit("a", list(range(40)), [1] * 40, "document"), 1)
+            assert scheduler.stats()["collection_waits"] == 0
+            assert scheduler.stats()["batches"] == 5
+        finally:
+            await scheduler.close()
+
+
+def test_token_budget_distinguishes_dense_and_small_requests_and_releases():
+    admission = InferenceAdmission(64, 8, max_tokens=100, per_user_tokens=60)
+    with admission.slot("a") as a:
+        a.reserve_tokens(60)
+        with admission.slot("a") as b:
+            with pytest.raises(HTTPException):
+                b.reserve_tokens(1)
+        with admission.slot("b") as b:
+            b.reserve_tokens(40)
+            with admission.slot("c") as c:
+                with pytest.raises(HTTPException):
+                    c.reserve_tokens(1)
+            assert admission.stats()["active_tokens"] == 100
+        assert admission.stats()["active_tokens"] == 60
+    assert admission.stats()["active_tokens"] == 0
+    assert admission.stats()["user_tokens"] == {}
+
+
+def test_oversized_request_runs_alone_and_keeps_later_work_out():
+    admission = InferenceAdmission(64, 8, max_tokens=100, per_user_tokens=60)
+    with admission.slot("a") as a:
+        a.reserve_tokens(1000)
+        with admission.slot("b") as b:
+            with pytest.raises(HTTPException):
+                b.reserve_tokens(1)
+    with admission.slot("b") as b:
+        b.reserve_tokens(1)
+    assert admission.stats()["active_tokens"] == 0
+
+
+def test_retry_after_uses_outstanding_work_and_observed_service_rate():
+    admission = InferenceAdmission(1, 1)
+    admission.observe(100, 1)
+    with admission.slot("a") as a:
+        a.reserve_tokens(1700)
+        with pytest.raises(HTTPException) as exc:
+            with admission.slot("b"):
+                pytest.fail("request cap")
+        assert exc.value.headers["Retry-After"] == "17"
+    assert admission.stats()["active_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_media_later_in_a_request_does_not_block_packing_its_text_prefix():
+    calls = []
+
+    def encode(inputs, kind, timing):
+        calls.append(inputs)
+        return np.array([[value, 1] for value in inputs])
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        scheduler = EmbeddingScheduler(executor, encode, batch_size=8, max_tokens=8, wait_ms=0)
+        try:
+            first, second = await asyncio.wait_for(
+                asyncio.gather(
+                    scheduler.submit("a", [1, 2], [4, None], "document"),
+                    scheduler.submit("b", [3], [4], "document"),
+                ),
+                2,
+            )
+            assert calls == [[1, 3], [2]]
+            assert first[:, 0].tolist() == [1, 2]
+            assert second[:, 0].tolist() == [3]
+        finally:
             await scheduler.close()

@@ -166,6 +166,8 @@ DEFAULTS = {
     "embedding_batch_wait_ms": 2,
     "inference_max_requests": 64,
     "inference_max_requests_per_user": 8,
+    "inference_max_tokens": 65536,
+    "inference_max_tokens_per_user": 32768,
     "embedding_flash_attention": False,
     "cuda_cache_ttl": 300,
     "cuda_min_clear_interval": 60,
@@ -400,7 +402,8 @@ def validate_args(parsed_args):
     _require_requested_accelerators(parsed_args)
 
     for key in ("embedding_batch_size", "embedding_batch_max_tokens",
-                "inference_max_requests", "inference_max_requests_per_user"):
+                "inference_max_requests", "inference_max_requests_per_user",
+                "inference_max_tokens", "inference_max_tokens_per_user"):
         value = getattr(parsed_args, key, DEFAULTS[key])
         if type(value) is not int or value < 1:
             raise ValueError(f"{key} must be a positive integer")
@@ -576,6 +579,10 @@ def parse_args():
                        help="Maximum admitted inference requests, including queued requests (default: 64)")
     parser.add_argument("--inference-max-requests-per-user", type=int, default=DEFAULTS["inference_max_requests_per_user"],
                        help="Maximum admitted inference requests per user (default: 8)")
+    parser.add_argument("--inference-max-tokens", type=int, default=DEFAULTS["inference_max_tokens"],
+                       help="Maximum outstanding input-token work per process (default: 65536)")
+    parser.add_argument("--inference-max-tokens-per-user", type=int, default=DEFAULTS["inference_max_tokens_per_user"],
+                       help="Maximum outstanding input-token work per user (default: 32768)")
     parser.add_argument("--embedding-flash-attention", action='store_true', default=DEFAULTS["embedding_flash_attention"],
                        help="Prefer FlashAttention 2 for compatible embedding encoders (requires flash_attn)")
     parser.add_argument("--log-embeddings", action='store_true', default=DEFAULTS.get("log_embeddings"),

@@ -14,6 +14,7 @@ from fastapi import HTTPException
 DEFAULT_LIMITS = {"daily": None, "weekly": None}
 DEFAULT_CACHE_CONFIG = {
     "scope": "global",
+    "fair_share_policy": "strict",
     "default_embedding_mb": None,
     "default_rerank_mb": None,
     "users": {},
@@ -392,6 +393,9 @@ class TenantStore:
         scope = cache.get("scope", DEFAULT_CACHE_CONFIG["scope"])
         if scope not in {"global", "per_user"}:
             raise HTTPException(status_code=400, detail="Cache scope must be 'global' or 'per_user'")
+        policy = cache.get("fair_share_policy", DEFAULT_CACHE_CONFIG["fair_share_policy"])
+        if policy not in ("soft", "strict"):
+            raise HTTPException(status_code=400, detail="Cache fair_share_policy must be 'soft' or 'strict'")
 
         users = {}
         known_users = set(self.data.get("users", {})) if validate_users else None
@@ -405,6 +409,7 @@ class TenantStore:
 
         return {
             "scope": scope,
+            "fair_share_policy": policy,
             "default_embedding_mb": self._clean_cache_limit(cache.get("default_embedding_mb")),
             "default_rerank_mb": self._clean_cache_limit(cache.get("default_rerank_mb")),
             "users": users,

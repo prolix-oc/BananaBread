@@ -163,7 +163,8 @@ DEFAULTS = {
     "embedding_dim": 1024,
     "embedding_batch_size": 8,
     "embedding_batch_max_tokens": 8192,
-    "embedding_batch_wait_ms": 10,
+    "embedding_batch_wait_ms": 25,
+    "embedding_batch_quiet_ms": 5,
     "inference_max_requests": 64,
     "inference_max_requests_per_user": 8,
     "inference_max_tokens": 65536,
@@ -410,10 +411,11 @@ def validate_args(parsed_args):
             raise ValueError(f"{key} must be a positive integer")
         setattr(parsed_args, key, value)
 
-    wait_ms = getattr(parsed_args, "embedding_batch_wait_ms", DEFAULTS["embedding_batch_wait_ms"])
-    if type(wait_ms) is not int or not 0 <= wait_ms <= 1000:
-        raise ValueError("embedding_batch_wait_ms must be an integer between 0 and 1000")
-    parsed_args.embedding_batch_wait_ms = wait_ms
+    for key in ("embedding_batch_wait_ms", "embedding_batch_quiet_ms"):
+        value = getattr(parsed_args, key, DEFAULTS[key])
+        if type(value) is not int or not 0 <= value <= 1000:
+            raise ValueError(f"{key} must be an integer between 0 and 1000")
+        setattr(parsed_args, key, value)
 
     admission_wait_ms = getattr(parsed_args, "inference_admission_wait_ms", 0)
     if type(admission_wait_ms) is not int or not 0 <= admission_wait_ms <= 30000:
@@ -580,7 +582,9 @@ def parse_args():
     parser.add_argument("--embedding-batch-max-tokens", type=int, default=DEFAULTS["embedding_batch_max_tokens"],
                        help="Maximum padded tokens per embedding batch; longer inputs run alone (default: 8192)")
     parser.add_argument("--embedding-batch-wait-ms", type=int, default=DEFAULTS["embedding_batch_wait_ms"],
-                       help="Maximum adaptive collection delay; flushes after 2 ms quiet (default: 10 ms)")
+                       help="Maximum adaptive batch collection delay (default: 25 ms; 0 disables collection)")
+    parser.add_argument("--embedding-batch-quiet-ms", type=int, default=DEFAULTS["embedding_batch_quiet_ms"],
+                       help="Flush an underfilled batch after arrivals pause (default: 5 ms; 0 waits until the maximum)")
     parser.add_argument("--inference-max-requests", type=int, default=DEFAULTS["inference_max_requests"],
                        help="Maximum admitted inference requests, including queued requests (default: 64)")
     parser.add_argument("--inference-max-requests-per-user", type=int, default=DEFAULTS["inference_max_requests_per_user"],

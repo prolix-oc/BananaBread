@@ -200,8 +200,8 @@ class EmbeddingScheduler:
         workers=1,
         batch_size=8,
         max_tokens=8192,
-        wait_ms=10,
-        quiet_ms=2,
+        wait_ms=25,
+        quiet_ms=5,
         observe=None,
     ):
         self.executor = executor
@@ -216,6 +216,9 @@ class EmbeddingScheduler:
         self.batches = 0
         self.encoded_inputs = 0
         self.collection_waits = 0
+        self.inference_s = 0.0
+        self.known_input_tokens = 0
+        self.padded_tokens = 0
         self.ready: OrderedDict[str, deque] = OrderedDict()
         self.wake = asyncio.Event()
         self.closed = False
@@ -364,6 +367,13 @@ class EmbeddingScheduler:
             "batches": self.batches,
             "encoded_inputs": self.encoded_inputs,
             "collection_waits": self.collection_waits,
+            "batch_size": self.batch_size,
+            "max_tokens": self.max_tokens,
+            "wait_ms": self.wait_s * 1000,
+            "quiet_ms": self.quiet_s * 1000,
+            "inference_seconds": self.inference_s,
+            "known_input_tokens": self.known_input_tokens,
+            "padded_tokens": self.padded_tokens,
         }
 
     async def _worker(self):
@@ -397,6 +407,10 @@ class EmbeddingScheduler:
                     self.observe(work, timing.work_s, requests=equivalents)
                 self.batches += 1
                 self.encoded_inputs += len(inputs)
+                self.inference_s += timing.work_s
+                if all(length is not None for length in lengths):
+                    self.known_input_tokens += sum(lengths)
+                    self.padded_tokens += max(lengths) * len(lengths)
             except Exception as exc:
                 for request, _ in selected:
                     request.running = False

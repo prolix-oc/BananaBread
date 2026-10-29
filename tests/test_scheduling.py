@@ -31,6 +31,9 @@ async def test_cross_request_batching_preserves_each_response_and_limits():
             )
             assert [result.tolist() for result in results] == [[[i, 1]] for i in range(16)]
             assert [len(inputs) for inputs, _ in calls] == [4, 4, 4, 4]
+            stats = scheduler.stats()
+            assert stats["known_input_tokens"] == stats["padded_tokens"] == 32
+            assert stats["inference_seconds"] > 0
         finally:
             await scheduler.close()
 
@@ -540,5 +543,42 @@ async def test_rate_samples_count_a_split_request_once_across_its_batches():
             )
             assert sum(observations) == 2
             assert scheduler.stats()["batches"] == 3
+        finally:
+            await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_default_collection_tolerates_three_ms_arrival_gaps_and_exposes_effective_settings(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+    import bananabread.scheduling as scheduling
+    from bananabread.utils import ExecutionTiming
+
+    now = [0.0]
+    monkeypatch.setattr(scheduling, "time", SimpleNamespace(perf_counter=lambda: now[0]))
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        scheduler = EmbeddingScheduler(executor, lambda inputs, *args: np.ones((len(inputs), 2)))
+        try:
+            loop = asyncio.get_running_loop()
+            for i in range(8):
+                now[0] = i * 0.003
+                request = scheduling._Request(
+                    str(i),
+                    [i],
+                    [1],
+                    "document",
+                    loop.create_future(),
+                    ExecutionTiming(),
+                    submitted=now[0],
+                )
+                scheduler._enqueue(request)
+                delay = scheduler._collection_delay()
+                if i < 7:
+                    assert delay == pytest.approx(min(0.005, 0.025 - now[0]))
+                else:
+                    assert delay == 0  # Full at 21 ms, before the absolute cap.
+            assert scheduler.stats()["wait_ms"] == 25
+            assert scheduler.stats()["quiet_ms"] == 5
         finally:
             await scheduler.close()

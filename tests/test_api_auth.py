@@ -621,3 +621,66 @@ def test_running_rerank_and_embedding_share_work_capacity_and_release_it(api_cli
         assert future.result(timeout=2).status_code == 200
     assert admission.stats()["active_tokens"] == 0
     assert admission.stats()["estimated_requests_per_second"] is not None
+
+
+def test_mixed_inference_keeps_gpu_allocator_cache_and_tracks_running_workers(api_client, monkeypatch):
+    api, client, store, model = api_client
+    cleared = []
+    monkeypatch.setattr(api.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(api.torch.cuda, "empty_cache", lambda: cleared.append(True))
+    monkeypatch.setattr(api.args, "embedding_device", "cuda:0")
+    monkeypatch.setattr(api.args, "rerank_device", "cuda:0")
+    started, release = threading.Event(), threading.Event()
+    original_rank = model.rank
+
+    def rank(*args, **kwargs):
+        assert api.cuda_cache_manager.active_inferences == 1
+        started.set()
+        assert release.wait(3)
+        return original_rank(*args, **kwargs)
+
+    original_encode = model.encode
+
+    def encode(*args, **kwargs):
+        assert api.cuda_cache_manager.active_inferences == 2
+        return original_encode(*args, **kwargs)
+
+    monkeypatch.setattr(model, "rank", rank)
+    monkeypatch.setattr(model, "encode", encode)
+    headers = {"Authorization": "Bearer alice-key"}
+    with ThreadPoolExecutor(max_workers=1) as clients:
+        future = clients.submit(client.post, "/v1/rerank", json={"query": "hello", "documents": ["world"]}, headers=headers)
+        try:
+            assert started.wait(2)
+            response = client.post("/v1/embeddings", json={"input": "hello"}, headers=headers)
+            assert response.status_code == 200, response.text
+            assert api.cuda_cache_manager.active_inferences == 1
+            assert cleared == []
+        finally:
+            release.set()
+        assert future.result(timeout=2).status_code == 200
+    assert api.cuda_cache_manager.active_inferences == 0
+    assert cleared == []
+
+
+def test_strict_cache_shares_follow_registered_users_and_management_policy(api_client):
+    api, client, store, model = api_client
+    headers = {"Authorization": "Bearer management-key"}
+    before = api.embedding_cache.stats()["fair_share"]
+    response = client.post("/v1/management/users", json={"username": "idle"}, headers=headers)
+    assert response.status_code == 200, response.text
+    for cache in (api.embedding_cache, api.rerank_cache):
+        stats = cache.stats()
+        assert stats["fair_share_policy"] == "strict"
+        assert stats["tenant_count"] == 2
+        assert stats["fair_share"] == before // 2
+        # Even if alice is the only populated namespace, idle retains its share.
+        cache.set("alice", "oversized", "x" * (before * 3 // 4))
+        assert cache.get("alice", "oversized") is None
+    response = client.patch("/v1/management/config", headers=headers,
+                            json={"cache": {"scope": "per_user", "fair_share_policy": "soft"}})
+    assert response.status_code == 200, response.text
+    assert response.json()["cache"]["fair_share_policy"] == "soft"
+    assert api.embedding_cache.stats()["fair_share_policy"] == "soft"
+    api.embedding_cache.set("alice", "borrowed", "x" * (before * 3 // 4))
+    assert api.embedding_cache.get("alice", "borrowed") is not None

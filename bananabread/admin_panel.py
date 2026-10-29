@@ -84,11 +84,16 @@ ADMIN_PANEL_HTML = """<!doctype html>
 
       <div class="card">
         <h2>Cache</h2>
-        <p>Cache can be <strong>global</strong> (shared across users) or <strong>per-user</strong> (isolated). All users share the server's total budget for each cache. Per-user caches can borrow unused space; the largest user gives space back first when the cache is full. Sizes are in MB; 0 disables storage. Leave blank to use the server default.</p>
+        <p>Cache can be <strong>global</strong> (shared across users) or <strong>per-user</strong> (isolated). Per-user caches use strict equal shares across all registered users by default. Soft shares allow borrowing unused space, with the largest user giving space back first when full. Sizes are in MB; 0 disables storage. Leave blank to use the server default.</p>
         <label for="cacheScope">Cache scope</label>
         <select id="cacheScope">
           <option value="global">Global (shared across users)</option>
           <option value="per_user">Per-user (isolated)</option>
+        </select>
+        <label for="cacheSharePolicy">Per-user cache shares</label>
+        <select id="cacheSharePolicy">
+          <option value="strict">Strict (equal ceiling per registered user)</option>
+          <option value="soft">Soft (borrow unused space)</option>
         </select>
         <div class="row">
           <div><label for="defaultEmbedMb">Default embedding cache MB</label><input id="defaultEmbedMb" type="number" min="0" placeholder="Server default"></div>
@@ -170,6 +175,7 @@ ADMIN_PANEL_HTML = """<!doctype html>
 
       const cache = config.cache || {};
       $('cacheScope').value = cache.scope || 'global';
+      $('cacheSharePolicy').value = cache.fair_share_policy || 'strict';
       $('defaultEmbedMb').value = cache.default_embedding_mb ?? '';
       $('defaultRerankMb').value = cache.default_rerank_mb ?? '';
 
@@ -235,9 +241,10 @@ ADMIN_PANEL_HTML = """<!doctype html>
         const payload = {
           cache: {
             scope: $('cacheScope').value,
+            fair_share_policy: $('cacheSharePolicy').value,
             default_embedding_mb: parseLimit($('defaultEmbedMb').value),
             default_rerank_mb: parseLimit($('defaultRerankMb').value),
-            users: {}
+            users: currentConfig?.cache?.users || {}
           }
         };
         const config = await api('/v1/management/config', { method: 'PATCH', body: JSON.stringify(payload) });

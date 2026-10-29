@@ -107,11 +107,12 @@ def test_invalid_batch_config_is_rejected(monkeypatch, key, value):
         config.validate_args(parsed)
 
 
+@pytest.mark.parametrize("key", ["embedding_batch_wait_ms", "embedding_batch_quiet_ms"])
 @pytest.mark.parametrize("value", [-1, 1001, True, 1.5, "2"])
-def test_invalid_batch_collection_delay_is_rejected(monkeypatch, value):
+def test_invalid_batch_collection_delay_is_rejected(monkeypatch, key, value):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    parsed = argparse.Namespace(**{**config.DEFAULTS, "embedding_batch_wait_ms": value})
-    with pytest.raises(ValueError, match="embedding_batch_wait_ms"):
+    parsed = argparse.Namespace(**{**config.DEFAULTS, key: value})
+    with pytest.raises(ValueError, match=key):
         config.validate_args(parsed)
 
 

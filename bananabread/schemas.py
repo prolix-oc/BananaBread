@@ -86,6 +86,7 @@ class UserCacheLimits(BaseModel):
 
 class CacheConfig(BaseModel):
     scope: str = "global"
+    fair_share_policy: str = "strict"
     default_embedding_mb: Optional[int] = None
     default_rerank_mb: Optional[int] = None
     users: Dict[str, UserCacheLimits] = {}

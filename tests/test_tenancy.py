@@ -545,7 +545,7 @@ def test_busy_cache_tenant_cannot_evict_small_tenants_entries():
     value = "x" * 100
     size = get_cache_size(value)
     cache = UserScopedCache(size * 4)
-    cache.configure(scope="per_user")
+    cache.configure(scope="per_user", fair_share_policy="soft")
     cache.set("quiet", "key", value)
     for i in range(20):
         cache.set("busy", str(i), value)
@@ -561,7 +561,7 @@ def test_unused_cache_space_can_be_borrowed_until_another_tenant_arrives():
     value = "x" * 100
     size = get_cache_size(value)
     cache = UserScopedCache(size * 4)
-    cache.configure(scope="per_user")
+    cache.configure(scope="per_user", fair_share_policy="soft")
     for i in range(4):
         cache.set("first", str(i), value)
     assert cache.stats()["users"]["first"]["entries"] == 4
@@ -580,7 +580,7 @@ def test_two_gib_cache_pressure_protects_smaller_tenants_from_one_heavy_writer(m
     budget = 2048 * mib
     monkeypatch.setattr(cache_module, "get_cache_size", lambda value: value["bytes"])
     cache = UserScopedCache(budget)
-    cache.configure(scope="per_user")
+    cache.configure(scope="per_user", fair_share_policy="soft")
     for i in range(16):
         cache.set(str(i), "quiet", {"bytes": 64 * mib})
     for i in range(100):
@@ -592,3 +592,75 @@ def test_two_gib_cache_pressure_protects_smaller_tenants_from_one_heavy_writer(m
     cache.set("heavy", "giant", {"bytes": budget})
     assert all(cache.get(str(user), "quiet") is not None for user in range(16))
     assert cache.total_size() == 1024 * mib
+
+
+def test_strict_shares_protect_idle_tenants_and_rebalance_when_users_are_added():
+    from bananabread.cache import get_cache_size
+
+    value = "x" * 100
+    size = get_cache_size(value)
+    cache = UserScopedCache(size * 16)
+    cache.configure(scope="per_user", tenant_count=4)
+    for i in range(100):
+        cache.set("heavy", str(i), value)
+    stats = cache.stats()
+    assert stats["fair_share_policy"] == "strict"
+    assert stats["fair_share"] == size * 4
+    assert stats["users"]["heavy"]["current_size"] == size * 4
+    # Idle registered users receive space without first pushing the cache over
+    # its aggregate budget or evicting any other tenant's cached results.
+    for user in ("a", "b", "c"):
+        for i in range(4):
+            cache.set(user, str(i), value)
+    for i in range(100, 200):
+        cache.set("heavy", str(i), value)
+    assert all(cache.get(user, str(i)) == value for user in ("a", "b", "c") for i in range(4))
+    assert cache.total_size() == size * 16
+
+    cache.configure(scope="per_user", tenant_count=8, user_limits={"heavy": size, "a": size * 10})
+    stats = cache.stats()
+    assert stats["fair_share"] == size * 2
+    assert stats["users"]["heavy"]["current_size"] == size
+    assert all(stats["users"][user]["current_size"] == size * 2 for user in ("a", "b", "c"))
+    assert cache.get("a", "0") is None
+    assert cache.get("a", "3") == value
+    cache.set("heavy", "too-big", "x" * 10000)
+    assert cache.get("a", "3") == value
+
+
+def test_strict_policy_does_not_partition_global_shared_cache():
+    from bananabread.cache import get_cache_size
+
+    value = "x" * 100
+    size = get_cache_size(value)
+    cache = UserScopedCache(size * 4)
+    cache.configure(scope="global", tenant_count=16)
+    for i in range(4):
+        cache.set("a", str(i), value)
+    assert cache.total_size() == size * 4
+    assert cache.get("b", "0") == value
+
+
+@pytest.mark.parametrize("policy", [None, True, [], "invalid"])
+def test_cache_share_policy_validation(tmp_path, policy):
+    store = TenantStore(str(tmp_path / "api_keys.json"), usage_save_interval=0)
+    store.load()
+    try:
+        with pytest.raises(HTTPException) as exc:
+            store.update_config(cache={"fair_share_policy": policy})
+        assert exc.value.status_code == 400
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("policy", ["soft", "strict"])
+def test_cache_share_policy_survives_reload(tmp_path, policy):
+    path = tmp_path / "api_keys.json"
+    store = TenantStore(str(path), usage_save_interval=0)
+    store.load()
+    store.update_config(cache={"scope": "per_user", "fair_share_policy": policy})
+    store.close()
+    restored = TenantStore(str(path), usage_save_interval=0)
+    restored.load()
+    assert restored.cache_config()["fair_share_policy"] == policy
+    restored.close()

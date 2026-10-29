@@ -5,6 +5,7 @@ import json
 import sys
 import torch
 from collections import OrderedDict
+from contextlib import contextmanager
 from typing import Optional, Any
 
 from bananabread.config import logger
@@ -26,6 +27,7 @@ class CUDACacheManager:
         self.last_inference_time = time.time()
         self.last_clear_time = time.time()
         self.clear_count = 0
+        self.active_inferences = 0
         
         # Thread safety
         self.activity_lock = threading.Lock()
@@ -50,6 +52,19 @@ class CUDACacheManager:
         """Mark that an inference operation just occurred"""
         with self.activity_lock:
             self.last_inference_time = time.time()
+
+    @contextmanager
+    def inference_activity(self):
+        """Keep idle cleanup out of running work, including long or failed calls."""
+        with self.activity_lock:
+            self.active_inferences += 1
+            self.last_inference_time = time.time()
+        try:
+            yield
+        finally:
+            with self.activity_lock:
+                self.active_inferences -= 1
+                self.last_inference_time = time.time()
     
     def get_cuda_memory_stats(self):
         """Get CUDA memory statistics"""
@@ -83,7 +98,7 @@ class CUDACacheManager:
     
     def should_clear_cache(self):
         """Determine if CUDA cache should be cleared"""
-        if not self.cuda_available:
+        if not self.cuda_available or self.active_inferences:
             return False
         
         current_time = time.time()
@@ -193,6 +208,7 @@ class CUDACacheManager:
             "min_clear_interval": self.min_clear_interval,
             "memory_threshold": self.memory_threshold,
             "clear_count": self.clear_count,
+            "active_inferences": self.active_inferences,
             "last_clear_time": self.last_clear_time,
             "last_inference_time": self.last_inference_time,
             "time_since_last_clear": current_time - self.last_clear_time,
@@ -315,6 +331,8 @@ class UserScopedCache:
         self.global_limit_bytes = global_limit_bytes
         self.default_limit_bytes = global_limit_bytes
         self.scope = "global"
+        self.fair_share_policy = "strict"
+        self.tenant_count = 1
         self.user_limits: dict[str, int] = {}
         self.entries = OrderedDict()
         self.recency: dict[str | None, OrderedDict] = {}
@@ -327,13 +345,21 @@ class UserScopedCache:
         scope: str = "global",
         default_limit_bytes: int | None = None,
         user_limits: dict[str, int] | None = None,
+        fair_share_policy: str = "strict",
+        tenant_count: int = 1,
     ):
         if scope not in {"global", "per_user"}:
             raise ValueError("cache scope must be 'global' or 'per_user'")
+        if fair_share_policy not in ("soft", "strict"):
+            raise ValueError("cache fair_share_policy must be 'soft' or 'strict'")
         with self.lock:
             if scope != self.scope:
                 self.clear()
             self.scope = scope
+            self.fair_share_policy = fair_share_policy
+            # The API passes all registered tenants, including those with no
+            # cached entries. Eviction must not shrink its own denominator.
+            self.tenant_count = max(1, tenant_count)
             self.default_limit_bytes = (
                 self.global_limit_bytes if default_limit_bytes is None else default_limit_bytes
             )
@@ -367,7 +393,10 @@ class UserScopedCache:
             self._evict_locked(namespace)
 
     def _limit_locked(self, namespace):
-        return self.user_limits.get(namespace, self.default_limit_bytes)
+        limit = self.user_limits.get(namespace, self.default_limit_bytes)
+        if self.scope == "per_user" and self.fair_share_policy == "strict":
+            limit = min(limit, self.global_limit_bytes // self.tenant_count)
+        return limit
 
     def _remove_locked(self, identity):
         _, size = self.entries.pop(identity)
@@ -380,7 +409,8 @@ class UserScopedCache:
             del self.recency[namespace]
 
     def _evict_locked(self, namespace=None):
-        # First enforce tenant shares; then apply LRU across all remaining entries.
+        # First enforce tenant ceilings, including strict shares; then reclaim
+        # aggregate space. Soft shares allow borrowing under largest-first LRU.
         namespaces = list(self.sizes) if namespace is None else [namespace]
         for user in namespaces:
             while self.sizes.get(user, 0) > self._limit_locked(user):
@@ -418,10 +448,15 @@ class UserScopedCache:
 
             return {
                 "scope": self.scope,
+                "fair_share_policy": self.fair_share_policy,
+                "tenant_count": self.tenant_count,
                 "aggregate_limit": self.global_limit_bytes,
                 "current_size": self.current_size,
                 "fair_share": (
-                    self.global_limit_bytes // max(1, len(self.sizes))
+                    self.global_limit_bytes // (
+                        self.tenant_count if self.fair_share_policy == "strict"
+                        else max(1, len(self.sizes))
+                    )
                     if self.scope == "per_user" else self.global_limit_bytes
                 ),
                 "global": namespace_stats(None),

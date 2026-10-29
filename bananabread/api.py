@@ -179,8 +179,11 @@ def mb_to_bytes(value: int | None, fallback_bytes: int) -> int:
 
 def apply_cache_config():
     cache_config = tenant_store.cache_config()
+    tenant_count = len(tenant_store.snapshot()["users"])
     embedding_cache.configure(
         scope=cache_config["scope"],
+        fair_share_policy=cache_config["fair_share_policy"],
+        tenant_count=tenant_count,
         default_limit_bytes=mb_to_bytes(cache_config.get("default_embedding_mb"), cache_limit_bytes),
         user_limits={
             username: mb_to_bytes(limits.get("embedding_mb"), cache_limit_bytes)
@@ -190,6 +193,8 @@ def apply_cache_config():
     )
     rerank_cache.configure(
         scope=cache_config["scope"],
+        fair_share_policy=cache_config["fair_share_policy"],
+        tenant_count=tenant_count,
         default_limit_bytes=mb_to_bytes(cache_config.get("default_rerank_mb"), cache_limit_bytes),
         user_limits={
             username: mb_to_bytes(limits.get("rerank_mb"), cache_limit_bytes)
@@ -295,7 +300,8 @@ def encode_scheduled_batch(inputs, input_type, timing):
         models_manager.embedding_model_pool.get_model()
         if models_manager.embedding_model_pool else models_manager.embedding_model
     )
-    return encode_inputs(model, inputs, input_type, timing=timing, planned_batch=True)
+    with cuda_cache_manager.inference_activity():
+        return encode_inputs(model, inputs, input_type, timing=timing, planned_batch=True)
 
 
 async def schedule_embeddings(username, inputs, input_type="document", *, timing=None):
@@ -338,6 +344,7 @@ async def lifespan(app: FastAPI):
         embedding_executor, encode_scheduled_batch, workers=EMBEDDING_THREADS,
         batch_size=args.embedding_batch_size, max_tokens=args.embedding_batch_max_tokens,
         wait_ms=args.embedding_batch_wait_ms,
+        quiet_ms=args.embedding_batch_quiet_ms,
         observe=lambda tokens, duration, requests: inference_admission.observe(
             tokens, duration, workers=EMBEDDING_THREADS, requests=requests
         ),
@@ -443,7 +450,9 @@ async def update_management_config(request: ManagementConfigUpdate, api_key: str
 @app.post("/v1/management/users", response_model=CreateUserResponse)
 async def create_user_endpoint(request: CreateUserRequest, api_key: str = Depends(get_management_key)):
     limits = request.limits.model_dump() if request.limits else None
-    return tenant_store.create_user(request.username, tier=request.tier, limits=limits)
+    result = tenant_store.create_user(request.username, tier=request.tier, limits=limits)
+    apply_cache_config()
+    return result
 
 @app.post("/v1/management/users/{username}/regenerate")
 async def regenerate_user_key_endpoint(username: str, api_key: str = Depends(get_management_key)):
@@ -487,11 +496,12 @@ async def rerank_endpoint(
         else:
             model = models_manager.rerank_model
 
-        try:
-            return model.rank(query, documents, return_documents=return_documents, top_k=top_k, task_description=task_description)
-        except TypeError:
-            # Fallback for models that don't support task_description
-            return model.rank(query, documents, return_documents=return_documents, top_k=top_k)
+        with cuda_cache_manager.inference_activity():
+            try:
+                return model.rank(query, documents, return_documents=return_documents, top_k=top_k, task_description=task_description)
+            except TypeError:
+                # Fallback for models that don't support task_description
+                return model.rank(query, documents, return_documents=return_documents, top_k=top_k)
 
     t_rank = time.perf_counter()
     rank_timing = ExecutionTiming()
@@ -508,11 +518,6 @@ async def rerank_endpoint(
     )
     inference_admission.observe(prompt_tokens, rank_timing.work_s, workers=RERANK_THREADS)
     rank_s = time.perf_counter() - t_rank
-
-    # Clear CUDA cache immediately after inference if using GPU
-    if torch.cuda.is_available() and (args.rerank_device.startswith('cuda') or args.rerank_device == 'mps'):
-        torch.cuda.empty_cache()
-        logger.debug("Cleared CUDA cache after reranking")
 
     # Defer cache insertion until after the response is sent (see embeddings
     # endpoint for rationale).
@@ -656,10 +661,6 @@ async def embedding_endpoint(
     else:
         embeddings_list = docs_embeddings.tolist()
 
-    if torch.cuda.is_available() and (args.embedding_device.startswith('cuda') or args.embedding_device == 'mps'):
-        torch.cuda.empty_cache()
-        logger.debug("Cleared CUDA cache after embedding")
-
     data = []
     for idx, emb in enumerate(embeddings_list):
         data.append({
@@ -717,7 +718,8 @@ async def lmstudio_embeddings_endpoint(
 @app.post("/v1/classify")
 async def classify_endpoint(request: ClassificationRequest, api_key: str = Depends(get_management_inference_key)):
     def classify():
-        return models_manager.get_classifier()(request.input)
+        with cuda_cache_manager.inference_activity():
+            return models_manager.get_classifier()(request.input)
 
     raw_result = await run_in_threadpool_with_executor(
         classification_executor, classify

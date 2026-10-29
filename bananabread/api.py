@@ -265,25 +265,33 @@ def count_usage_tokens(texts: List[str], *, timing: ExecutionTiming | None = Non
 async def consume_user_tokens(
     username: str, texts: List[str], *, timing: ExecutionTiming | None = None, reservation=None
 ) -> int:
-    if args.inference_admission_wait_ms and reservation is not None:
-        tokens = await run_in_threadpool_with_executor(
-            general_executor, lambda: count_usage_tokens(texts, timing=timing), timing=timing
-        )
-        await consume_after_capacity_wait(username, tokens, reservation)
-        return tokens
     # Tokenizers and tenant accounting both acquire threading locks. Inference
     # can hold the tokenizer lock for an entire batch, so neither belongs on the
     # event loop. Use the general pool so accounting does not queue behind GPU work.
     def count_and_consume():
         tokens = count_usage_tokens(texts, timing=timing)
-        if reservation is not None:
-            reservation.reserve_tokens(tokens)
-        tenant_store.check_and_consume(username, tokens)
-        return tokens
+        return tokens, try_consume_tokens(username, tokens, reservation)
 
-    return await run_in_threadpool_with_executor(
+    tokens, consumed = await run_in_threadpool_with_executor(
         general_executor, count_and_consume, timing=timing
     )
+    if not consumed:
+        await consume_after_capacity_wait(username, tokens, reservation)
+    return tokens
+
+
+def try_consume_tokens(username, tokens, reservation):
+    # Keep available-capacity requests on the single-worker accounting path.
+    # Only capacity contention moves to the async wait; quota failures never do.
+    if reservation is not None:
+        try:
+            reservation.reserve_tokens(tokens)
+        except HTTPException as exc:
+            if exc.status_code != 429 or not args.inference_admission_wait_ms:
+                raise
+            return False
+    tenant_store.check_and_consume(username, tokens)
+    return True
 
 
 async def consume_after_capacity_wait(username, tokens, reservation):
@@ -568,18 +576,14 @@ async def embedding_endpoint(
         def prepare_and_consume():
             decoded, descriptions = prepare_inputs(inputs, model)
             tokens = count_input_tokens(decoded, model, timing=account_timing)
-            if args.inference_admission_wait_ms and auth.get("_reservation") is not None:
-                return decoded, descriptions, tokens
-            if auth.get("_reservation") is not None:
-                auth["_reservation"].reserve_tokens(tokens)
-            tenant_store.check_and_consume(auth["username"], tokens)
-            return decoded, descriptions, tokens
+            consumed = try_consume_tokens(auth["username"], tokens, auth.get("_reservation"))
+            return decoded, descriptions, tokens, consumed
 
         try:
-            prepared_inputs, log_inputs, prompt_tokens = await run_in_threadpool_with_executor(
+            prepared_inputs, log_inputs, prompt_tokens, consumed = await run_in_threadpool_with_executor(
                 general_executor, prepare_and_consume, timing=account_timing
             )
-            if args.inference_admission_wait_ms and auth.get("_reservation") is not None:
+            if not consumed:
                 await consume_after_capacity_wait(auth["username"], prompt_tokens, auth["_reservation"])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -943,7 +947,9 @@ async def memory_usage(api_key: str = Depends(get_management_key)):
     data["rerank_threads"] = RERANK_THREADS
     data["classification_threads"] = CLASSIFICATION_THREADS
     data["general_threads"] = GENERAL_THREADS
-    data["inference_admission"] = inference_admission.stats()
+    data["inference_admission"] = {
+        **inference_admission.stats(), "wait_ms": args.inference_admission_wait_ms,
+    }
     data["embedding_scheduler"] = app.state.embedding_scheduler.stats()
     
     data["cuda_cache_manager"] = cuda_cache_manager.get_stats()

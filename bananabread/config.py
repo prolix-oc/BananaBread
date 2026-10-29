@@ -169,7 +169,7 @@ DEFAULTS = {
     "inference_max_requests_per_user": 8,
     "inference_max_tokens": 65536,
     "inference_max_tokens_per_user": 32768,
-    "inference_admission_wait_ms": 0,
+    "inference_admission_wait_ms": 30000,
     "embedding_flash_attention": False,
     "cuda_cache_ttl": 300,
     "cuda_min_clear_interval": 60,
@@ -417,7 +417,7 @@ def validate_args(parsed_args):
             raise ValueError(f"{key} must be an integer between 0 and 1000")
         setattr(parsed_args, key, value)
 
-    admission_wait_ms = getattr(parsed_args, "inference_admission_wait_ms", 0)
+    admission_wait_ms = getattr(parsed_args, "inference_admission_wait_ms", DEFAULTS["inference_admission_wait_ms"])
     if type(admission_wait_ms) is not int or not 0 <= admission_wait_ms <= 30000:
         raise ValueError("inference_admission_wait_ms must be an integer between 0 and 30000")
     parsed_args.inference_admission_wait_ms = admission_wait_ms
@@ -594,7 +594,7 @@ def parse_args():
     parser.add_argument("--inference-max-tokens-per-user", type=int, default=DEFAULTS["inference_max_tokens_per_user"],
                        help="Maximum outstanding input-token work per user (default: 32768)")
     parser.add_argument("--inference-admission-wait-ms", type=int, default=DEFAULTS["inference_admission_wait_ms"],
-                       help="Wait for token capacity before returning 429; 0 rejects immediately (default: 0; max: 30000)")
+                       help="Wait for token capacity before returning 429; 0 rejects immediately (default/max: 30000 ms)")
     parser.add_argument("--embedding-flash-attention", action='store_true', default=DEFAULTS["embedding_flash_attention"],
                        help="Prefer FlashAttention 2 for compatible embedding encoders (requires flash_attn)")
     parser.add_argument("--log-embeddings", action='store_true', default=DEFAULTS.get("log_embeddings"),

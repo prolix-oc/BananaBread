@@ -374,6 +374,7 @@ def test_overload_rejected_before_accounting_on_every_user_inference_route(api_c
         response = client.post(route, json=payload, headers={"Authorization": "Bearer alice-key"})
     assert response.status_code == 429, response.text
     assert response.headers["Retry-After"] == "1"
+    assert "global request limit" in response.json()["detail"]
     assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 0
     assert model.calls == 0
 
@@ -463,6 +464,7 @@ def test_token_work_overflow_is_not_charged_on_any_user_route(api_client, monkey
     api, client, store, model = api_client
     admission = InferenceAdmission(64, 8, max_tokens=4, per_user_tokens=4)
     monkeypatch.setattr(api, "inference_admission", admission)
+    monkeypatch.setattr(api.args, "inference_admission_wait_ms", 0)
     payload = {field: value, "model": "test/auth", "query": "hello"}
     with admission.slot("busy") as busy:
         busy.reserve_tokens(4)
@@ -502,6 +504,7 @@ def test_parallel_token_reservations_enforce_budget_before_charging(api_client, 
     api, client, store, model = api_client
     admission = InferenceAdmission(64, 8, max_tokens=global_budget, per_user_tokens=user_budget)
     monkeypatch.setattr(api, "inference_admission", admission)
+    monkeypatch.setattr(api.args, "inference_admission_wait_ms", 0)
     barrier = threading.Barrier(2)
     release = threading.Event()
     original_count = api.count_usage_tokens
@@ -524,6 +527,8 @@ def test_parallel_token_reservations_enforce_budget_before_charging(api_client, 
         try:
             first = next(as_completed(futures, timeout=2)).result()
             assert first.status_code == 429, first.text
+            reason = "global token budget" if global_budget == 1 else "per-user token budget"
+            assert reason in first.json()["detail"]
             assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 1
         finally:
             release.set()
@@ -581,6 +586,7 @@ def test_optional_admission_deadline_returns_429_without_quota_charge(api_client
         response = client.post(route, json={field: value, "model": "test/auth", "query": "hello"},
                                headers={"Authorization": "Bearer alice-key"})
         assert response.status_code == 429, response.text
+        assert "token capacity wait timed out" in response.json()["detail"]
         assert int(response.headers["Retry-After"]) >= 1
         assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 0
         assert admission.stats()["active_requests"] == 1
@@ -595,6 +601,7 @@ def test_running_rerank_and_embedding_share_work_capacity_and_release_it(api_cli
     api, client, store, model = api_client
     admission = InferenceAdmission(64, 8, max_tokens=2)
     monkeypatch.setattr(api, "inference_admission", admission)
+    monkeypatch.setattr(api.args, "inference_admission_wait_ms", 0)
     store.create_user("bob")
     store.set_user_api_key("bob", "bob-key")
     started, release = threading.Event(), threading.Event()
@@ -684,3 +691,106 @@ def test_strict_cache_shares_follow_registered_users_and_management_policy(api_c
     assert api.embedding_cache.stats()["fair_share_policy"] == "soft"
     api.embedding_cache.set("alice", "borrowed", "x" * (before * 3 // 4))
     assert api.embedding_cache.get("alice", "borrowed") is not None
+
+
+@pytest.mark.parametrize("batch_size,words_per_doc,same_user", [
+    (50, 400, True), (50, 800, False), (50, 1400, True), (200, 400, True),
+])
+def test_default_admission_wait_accepts_overlapping_lumiverse_batches(api_client, monkeypatch, batch_size, words_per_doc, same_user):
+    from bananabread.scheduling import InferenceAdmission
+
+    api, client, store, model = api_client
+    assert api.args.inference_admission_wait_ms == 30000
+    admission = InferenceAdmission(64, 8)
+    monkeypatch.setattr(api, "inference_admission", admission)
+    if not same_user:
+        store.create_user("bob")
+        store.set_user_api_key("bob", "bob-key")
+    started, release, waiting = threading.Event(), threading.Event(), threading.Event()
+    original_wait = admission.wait_for_tokens
+
+    async def wait(*args):
+        waiting.set()
+        return await original_wait(*args)
+
+    def encode(inputs, **kwargs):
+        started.set()
+        assert release.wait(3)
+        assert len(inputs) <= 8
+        assert len(inputs) * words_per_doc <= 8192
+        return np.array([[float(text.split()[0]), 1.0] for text in inputs])
+
+    monkeypatch.setattr(admission, "wait_for_tokens", wait)
+    monkeypatch.setattr(model, "encode", encode)
+    monkeypatch.setattr(model, "preprocess", lambda inputs: {"input_ids": np.zeros((1, words_per_doc))}, raising=False)
+    # Lumiverse defaults to 50 texts per HTTP batch and permits 200. These cases exceed the
+    # per-user work budget, global work budget, or entire budget respectively
+    # only when requests overlap. Native inference remains capped at 8 inputs.
+    batches = [[f"{offset + i} " + "word " * (words_per_doc - 1) for i in range(batch_size)]
+               for offset in (0, 1000)]
+    tokens = batch_size * words_per_doc
+    usernames = ["alice", "alice" if same_user else "bob"]
+    with ThreadPoolExecutor(max_workers=2) as clients:
+        first = clients.submit(client.post, "/v1/embeddings", json={"input": batches[0]},
+                               headers={"Authorization": "Bearer alice-key"})
+        second = None
+        try:
+            assert started.wait(2)
+            second = clients.submit(client.post, "/v1/embeddings", json={"input": batches[1]},
+                                    headers={"Authorization": f"Bearer {usernames[1]}-key"})
+            assert waiting.wait(2)
+            assert client.get("/v1/health", headers={"Authorization": "Bearer alice-key"}).status_code == 200
+            assert admission.stats()["active_tokens"] == tokens
+            assert admission.stats()["waiting_requests"] == 1
+            assert not second.done()
+            assert sum(user["usage"]["daily"]["tokens"] for user in store.snapshot()["users"].values()) == tokens
+        finally:
+            release.set()
+        for offset, future in zip((0, 1000), (first, second)):
+            response = future.result(timeout=5)
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["usage"]["prompt_tokens"] == tokens
+            assert [row["embedding"][0] for row in body["data"]] == list(range(offset, offset + batch_size))
+    users = store.snapshot()["users"]
+    if same_user:
+        assert users["alice"]["usage"]["daily"]["tokens"] == tokens * 2
+    else:
+        assert all(users[user]["usage"]["daily"]["tokens"] == tokens for user in usernames)
+    assert admission.stats()["active_requests"] == 0
+    assert admission.stats()["active_tokens"] == 0
+    assert admission.stats()["waiting_requests"] == 0
+    native_batch_size = min(8, 8192 // words_per_doc)
+    assert api.app.state.embedding_scheduler.stats()["batches"] == 2 * ((batch_size + native_batch_size - 1) // native_batch_size)
+
+
+@pytest.mark.parametrize("input_value", ["hello", {"text": "hello"}])
+def test_quota_errors_do_not_enter_capacity_wait_with_default_wait_enabled(api_client, monkeypatch, input_value):
+    api, client, store, model = api_client
+    store.update_config(default_limits={"daily": 0})
+
+    async def unexpected_wait(*args):
+        pytest.fail("Quota rejection must not be treated as transient capacity contention")
+
+    monkeypatch.setattr(api.inference_admission, "wait_for_tokens", unexpected_wait)
+    response = client.post("/v1/embeddings", json={"input": input_value},
+                           headers={"Authorization": "Bearer alice-key"})
+    assert response.status_code == 429, response.text
+    assert response.json()["detail"]["error"] == "Token limit exceeded"
+    assert model.calls == 0
+    assert store.snapshot()["users"]["alice"]["usage"]["daily"]["tokens"] == 0
+    assert api.inference_admission.stats()["active_requests"] == 0
+    assert api.inference_admission.stats()["active_tokens"] == 0
+
+
+@pytest.mark.parametrize("setting,flags,expected", [
+    (None, [], 30000),
+    (0, [], 0),
+    (250, [], 250),
+    (0, ["--inference-admission-wait-ms", "30000"], 30000),
+])
+def test_admission_wait_defaults_and_explicit_overrides(monkeypatch, tmp_path, setting, flags, expected):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({} if setting is None else {"inference_admission_wait_ms": setting}))
+    monkeypatch.setattr(sys, "argv", ["bananabread", "--config", str(path), *flags])
+    assert config.parse_args().inference_admission_wait_ms == expected

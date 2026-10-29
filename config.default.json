@@ -35,7 +35,7 @@
     "inference_max_requests_per_user": 8,
     "inference_max_tokens": 65536,
     "inference_max_tokens_per_user": 32768,
-    "inference_admission_wait_ms": 0,
+    "inference_admission_wait_ms": 30000,
     "embedding_flash_attention": false,
 
     "use_cores": null,

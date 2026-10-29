@@ -48,7 +48,7 @@ class InferenceAdmission:
         self.waiters: dict[asyncio.Future, asyncio.AbstractEventLoop] = {}
         self.lock = threading.Lock()
 
-    def _overloaded(self):
+    def _overloaded(self, reason):
         # Before the first sample, estimate known work only. A guessed fixed
         # cost per request overstates small bursts and persists under warm load.
         seconds = self.tokens / (self.token_rate or 8192)
@@ -56,7 +56,7 @@ class InferenceAdmission:
             seconds = max(seconds, self.active / self.request_rate)
         return HTTPException(
             status_code=429,
-            detail="Inference capacity exceeded; retry later",
+            detail=f"Inference capacity exceeded; retry later ({reason})",
             headers={"Retry-After": str(max(1, min(60, math.ceil(seconds))))},
         )
 
@@ -73,10 +73,10 @@ class InferenceAdmission:
         user_tokens = self.user_tokens.get(reservation.username, 0)
         # Keep large single requests supported, but never queue more work
         # alongside one that exceeds the entire budget.
-        if (self.tokens and self.tokens + weight > self.max_tokens) or (
-            user_tokens and user_tokens + weight > self.per_user_tokens
-        ):
-            raise self._overloaded()
+        if self.tokens and self.tokens + weight > self.max_tokens:
+            raise self._overloaded("global token budget")
+        if user_tokens and user_tokens + weight > self.per_user_tokens:
+            raise self._overloaded("per-user token budget")
         reservation.tokens = weight
         self.tokens += weight
         self.user_tokens[reservation.username] = user_tokens + weight
@@ -102,7 +102,7 @@ class InferenceAdmission:
                 await asyncio.wait_for(future, remaining)
             except TimeoutError:
                 with self.lock:
-                    raise self._overloaded()
+                    raise self._overloaded("token capacity wait timed out")
             finally:
                 with self.lock:
                     self.waiters.pop(future, None)
@@ -130,8 +130,10 @@ class InferenceAdmission:
     @contextmanager
     def slot(self, username: str):
         with self.lock:
-            if self.active >= self.max_requests or self.users.get(username, 0) >= self.per_user:
-                raise self._overloaded()
+            if self.active >= self.max_requests:
+                raise self._overloaded("global request limit")
+            if self.users.get(username, 0) >= self.per_user:
+                raise self._overloaded("per-user request limit")
             self.active += 1
             self.users[username] = self.users.get(username, 0) + 1
             reservation = _Reservation(self, username)
